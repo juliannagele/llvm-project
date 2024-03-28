@@ -1704,6 +1704,14 @@ void Instruction::addAnnotationMetadata(StringRef Name) {
   setMetadata(LLVMContext::MD_annotation, MD);
 }
 
+void Instruction::addAnnotationMetadata(const Instruction &Src) {
+  if (MDNode *MD = Src.getMetadata(LLVMContext::MD_annotation)) {
+    if (MDNode *Existing = getMetadata(LLVMContext::MD_annotation))
+      MD = MDNode::concatenate(Existing, MD);
+    setMetadata(LLVMContext::MD_annotation, MD);
+  }
+}
+
 AAMDNodes Instruction::getAAMetadata() const {
   AAMDNodes Result;
   // Not using Instruction::hasMetadata() because we're not interested in

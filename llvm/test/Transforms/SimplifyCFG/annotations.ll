@@ -104,15 +104,15 @@ cont1:                                            ; preds = %cont
 
 
 ; The branch in %cont has no !annotation metadata. Make sure generated negation
-; and OR do not have !annotation metadata.
-define i32 @test_or_not_no_annotation(ptr %a, ptr %b, ptr %c, ptr %d) {
-; CHECK-LABEL: define {{.*}} @test_or_not_no_annotation({{.*}}
+; does not have !annotation metadata.
+define i32 @test_not_no_annotation(ptr %a, ptr %b, ptr %c, ptr %d) {
+; CHECK-LABEL: define {{.*}} @test_not_no_annotation({{.*}}
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[A:%.*]], [[B:%.*]], !annotation !0
 ; CHECK-NEXT:    [[C_2:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    [[C_2_NOT:%.*]] = xor i1 [[C_2]], true
 ; CHECK-NEXT:    [[C_3:%.*]] = icmp uge ptr [[C:%.*]], [[D:%.*]], !annotation !0
-; CHECK-NEXT:    [[OR_COND:%.*]] = select i1 [[C_2_NOT]], i1 true, i1 [[C_3]]
+; CHECK-NEXT:    [[OR_COND:%.*]] = select i1 [[C_2_NOT]], i1 true, i1 [[C_3]], !annotation !0
 ; CHECK-NEXT:    br i1 [[OR_COND]], label [[TRAP:%.*]], label [[CONT1:%.*]], !annotation !0
 ; CHECK:       trap: ; preds = %entry
 ; CHECK-NEXT:    call void @fn1()

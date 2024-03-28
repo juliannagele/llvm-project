@@ -433,6 +433,8 @@ public:
   /// !annotation metadata, append the tuple to
   /// the existing node.
   void addAnnotationMetadata(SmallVector<StringRef> Annotations);
+  /// Adds !annotation metadata from \p Src to this instruction.
+  void addAnnotationMetadata(const Instruction &Src);
   /// Returns the AA metadata for this instruction.
   AAMDNodes getAAMetadata() const;
 

@@ -3871,9 +3871,16 @@ static bool performBranchToCommonDestFolding(BranchInst *BI, BranchInst *PBI,
   // Now that the Cond was cloned into the predecessor basic block,
   // or/and the two conditions together.
   Value *BICond = VMap[BI->getCondition()];
-  PBI->setCondition(
-      createLogicalOp(Builder, Opc, PBI->getCondition(), BICond, "or.cond"));
-
+  auto *NewCond =
+      createLogicalOp(Builder, Opc, PBI->getCondition(), BICond, "or.cond");
+  // Since the new condition represents the merge of both branches,
+  // also add any !annotation metadata of the remaining branch.
+  if (auto *NewCondI = dyn_cast<Instruction>(NewCond))
+    NewCondI->addAnnotationMetadata(*PBI);
+  PBI->setCondition(NewCond);
+  // If BB's terminator, i.e., the eliminated branch has !annotation
+  // metadata, add it to the remaining branch.
+  PBI->addAnnotationMetadata(*(BB->getTerminator()));
   ++NumFoldBranchToCommonDest;
   return true;
 }
