@@ -1326,7 +1326,7 @@ public:
     /// Collect loop guards in \p Guards, starting from PHINode \p
     /// Phi, by calling \p collectFromBlock on the incoming blocks of
     /// \Phi and trying to merge the found constraints into a single
-    /// combined one for \p Phi.
+    /// combined on for \p Phi.
     static void collectFromPHI(
         ScalarEvolution &SE, ScalarEvolution::LoopGuards &Guards,
         const PHINode &Phi, SmallPtrSetImpl<const BasicBlock *> &VisitedBlocks,
