@@ -44,6 +44,7 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Use.h"
@@ -82,6 +83,7 @@ STATISTIC(NumCompletelyUnrolled, "Number of loops completely unrolled");
 STATISTIC(NumUnrolled, "Number of loops unrolled (completely or otherwise)");
 STATISTIC(NumUnrolledNotLatch, "Number of loops unrolled without a conditional "
                                "latch (completely or otherwise)");
+STATISTIC(SplitReductions, "Number of split accumulators in reductions");
 
 static cl::opt<bool>
 UnrollRuntimeEpilog("unroll-runtime-epilog", cl::init(false), cl::Hidden,
@@ -656,8 +658,23 @@ llvm::UnrollLoop(Loop *L, UnrollLoopOptions ULO, LoopInfo *LI,
   // PHI nodes.  Insert associations now.
   ValueToValueMapTy LastValueMap;
   std::vector<PHINode*> OrigPHINode;
+
+  DenseMap<PHINode*, RecurrenceDescriptor> ReductionPHIs;
+  DenseMap<Value*, RecurrenceDescriptor> Accumulators;
+  DenseMap<Value*, SmallVector<Value*, 4>> SplitAccumulators;
+
   for (BasicBlock::iterator I = Header->begin(); isa<PHINode>(I); ++I) {
-    OrigPHINode.push_back(cast<PHINode>(I));
+    PHINode* PN = cast<PHINode>(I);
+    OrigPHINode.push_back(PN);
+
+    RecurrenceDescriptor RD;
+    if (RecurrenceDescriptor::isReductionPHI(PN, L, RD, nullptr, AC, DT, SE)) {
+      ReductionPHIs.try_emplace(PN, RD);
+      auto *Acc = RD.getLoopExitInstr();
+      Accumulators.try_emplace(Acc, RD);
+      SplitAccumulators[Acc].push_back(Acc);
+      ++SplitReductions;
+    }
   }
 
   std::vector<BasicBlock *> Headers;
@@ -736,8 +753,16 @@ llvm::UnrollLoop(Loop *L, UnrollLoopOptions ULO, LoopInfo *LI,
           if (Instruction *InValI = dyn_cast<Instruction>(InVal))
             if (It > 1 && L->contains(InValI))
               InVal = LastValueMap[InValI];
-          VMap[OrigPHI] = InVal;
-          NewPHI->eraseFromParent();
+          if (ReductionPHIs.contains(OrigPHI)) {
+            NewPHI->setIncomingValueForBlock(LatchBlock, VMap[InVal]);
+            NewPHI->removeFromParent();
+            NewPHI->insertBefore(Header->getFirstInsertionPt());
+            SplitAccumulators[ReductionPHIs[OrigPHI].getLoopExitInstr()]
+                .push_back(VMap[InVal]);
+          } else {
+            NewPHI->eraseFromParent();
+            VMap[OrigPHI] = InVal;
+          }
         }
 
         // Eliminate copies of the loop heart intrinsic, if any.
@@ -768,14 +793,40 @@ llvm::UnrollLoop(Loop *L, UnrollLoopOptions ULO, LoopInfo *LI,
       for (BasicBlock *Succ : successors(*BB)) {
         if (L->contains(Succ))
           continue;
+        SmallVector<PHINode*, 4> AccPHIs;
+        SmallVector<PHINode*, 4> OldPHIs;
         for (PHINode &PHI : Succ->phis()) {
           Value *Incoming = PHI.getIncomingValueForBlock(*BB);
-          ValueToValueMapTy::iterator It = LastValueMap.find(Incoming);
-          if (It != LastValueMap.end())
-            Incoming = It->second;
-          PHI.addIncoming(Incoming, New);
-          SE->forgetLcssaPhiWithNewPredecessor(L, &PHI);
+          if (SplitAccumulators.contains(Incoming)) {
+            auto Accs = SplitAccumulators[Incoming];
+            auto *IntTy = Accs[0]->getType();
+            auto *VecTy = FixedVectorType::get(IntTy, Accs.size());
+            Value *Vec = UndefValue::get(VecTy);
+            llvm::IRBuilder<> Builder(Succ, Succ->getFirstInsertionPt());
+            for (unsigned I = 0; I < Accs.size(); I++) {
+              auto *AccPHI = PHINode::Create(PHI.getType(), 1);
+              AccPHI->addIncoming(Accs[I], *BB);
+              AccPHI->addIncoming(Accs[I], New);
+              AccPHIs.emplace_back(AccPHI);
+              Vec = Builder.CreateInsertElement(Vec, AccPHI, Builder.getInt32(I));
+            }
+            auto *Red = createSimpleReduction(
+                Builder, Vec, Accumulators[Incoming].getRecurrenceKind());
+            PHI.replaceAllUsesWith(Red);
+            OldPHIs.emplace_back(&PHI);
+          }
+          else {
+            ValueToValueMapTy::iterator It = LastValueMap.find(Incoming);
+            if (It != LastValueMap.end())
+              Incoming = It->second;
+            PHI.addIncoming(Incoming, New);
+            SE->forgetLcssaPhiWithNewPredecessor(L, &PHI);
+          }
         }
+        for (auto *AccPHI : AccPHIs)
+          AccPHI->insertBefore(Succ->getFirstInsertionPt());
+        for (auto *OldPHI : OldPHIs)
+          OldPHI->eraseFromParent();
       }
       // Keep track of new headers and latches as we create them, so that
       // we can insert the proper branches later.
@@ -835,9 +886,11 @@ llvm::UnrollLoop(Loop *L, UnrollLoopOptions ULO, LoopInfo *LI,
       Value *InVal = PN->removeIncomingValue(LatchBlock, false);
       // If this value was defined in the loop, take the value defined by the
       // last iteration of the loop.
-      if (Instruction *InValI = dyn_cast<Instruction>(InVal)) {
-        if (L->contains(InValI))
-          InVal = LastValueMap[InVal];
+      if (!ReductionPHIs.contains(PN)) {
+        if (Instruction *InValI = dyn_cast<Instruction>(InVal)) {
+          if (L->contains(InValI))
+            InVal = LastValueMap[InVal];
+        }
       }
       assert(Latches.back() == LastValueMap[LatchBlock] && "bad last latch");
       PN->addIncoming(InVal, Latches.back());
