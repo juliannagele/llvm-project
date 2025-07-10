@@ -753,7 +753,7 @@ llvm::UnrollLoop(Loop *L, UnrollLoopOptions ULO, LoopInfo *LI,
           if (Instruction *InValI = dyn_cast<Instruction>(InVal))
             if (It > 1 && L->contains(InValI))
               InVal = LastValueMap[InValI];
-          if (ReductionPHIs.contains(OrigPHI)) {
+          if (ReductionPHIs.contains(OrigPHI) && VMap[InVal]) {
             NewPHI->setIncomingValueForBlock(LatchBlock, VMap[InVal]);
             NewPHI->removeFromParent();
             NewPHI->insertBefore(Header->getFirstInsertionPt());
