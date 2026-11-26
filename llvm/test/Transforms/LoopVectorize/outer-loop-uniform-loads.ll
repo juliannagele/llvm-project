@@ -212,8 +212,7 @@ exit:
   ret void
 }
 
-; A cast of a uniform load is uniform too.
-; TODO: Narrow the sext to a scalar cast.
+; A cast of a uniform load is uniform too, and stays a scalar cast.
 define void @uniform_load_sext(ptr noalias %a, ptr noalias %q, i64 %N, i64 %M) {
 ; CHECK-LABEL: define void @uniform_load_sext(
 ; CHECK-SAME: ptr noalias [[A:%.*]], ptr noalias [[Q:%.*]], i64 [[N:%.*]], i64 [[M:%.*]]) {
@@ -227,9 +226,9 @@ define void @uniform_load_sext(ptr noalias %a, ptr noalias %q, i64 %N, i64 %M) {
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[OUTER_LATCH5:.*]] ]
 ; CHECK-NEXT:    [[TMP7:%.*]] = load i32, ptr [[Q]], align 4
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT2:%.*]] = insertelement <4 x i32> poison, i32 [[TMP7]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT2:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT2]], <4 x i32> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP1:%.*]] = sext <4 x i32> [[BROADCAST_SPLAT2]] to <4 x i64>
+; CHECK-NEXT:    [[TMP2:%.*]] = sext i32 [[TMP7]] to i64
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[TMP2]], i64 0
+; CHECK-NEXT:    [[TMP1:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[INNER3:.*]]
 ; CHECK:       [[INNER3]]:
 ; CHECK-NEXT:    [[J2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER3]] ]

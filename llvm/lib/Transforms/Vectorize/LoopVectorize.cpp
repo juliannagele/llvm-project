@@ -7575,7 +7575,8 @@ bool LoopVectorizePass::processLoop(Loop *L) {
 
   // Outer loops require a computable trip count.
   if (!IsInnerLoop && isa<SCEVCouldNotCompute>(PSE.getBackedgeTakenCount())) {
-    LLVM_DEBUG(dbgs() << "LV: cannot compute the outer-loop trip count\n");
+    reportVectorizationFailure("Cannot compute the outer-loop trip count",
+                               "UnsupportedUncountableLoop", ORE, L);
     return false;
   }
 

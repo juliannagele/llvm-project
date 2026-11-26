@@ -132,10 +132,6 @@ define void @inner_loop_dependant_select(ptr noalias nocapture %out, double %a, 
 ; CHECK-NEXT:  [[ENTRY:.*:]]
 ; CHECK-NEXT:    br label %[[VECTOR_PH:.*]]
 ; CHECK:       [[VECTOR_PH]]:
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x double> poison, double [[A]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x double> [[BROADCAST_SPLATINSERT]], <4 x double> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT2:%.*]] = insertelement <4 x double> poison, double [[B]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT3:%.*]] = shufflevector <4 x double> [[BROADCAST_SPLATINSERT2]], <4 x double> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[VECTOR_LATCH:.*]] ]
@@ -143,10 +139,10 @@ define void @inner_loop_dependant_select(ptr noalias nocapture %out, double %a, 
 ; CHECK-NEXT:    br label %[[FOR2_HEADER3:.*]]
 ; CHECK:       [[FOR2_HEADER3]]:
 ; CHECK-NEXT:    [[INDVAR24:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[FOR2_HEADER3]] ]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT5:%.*]] = insertelement <4 x i64> poison, i64 [[INDVAR24]], i64 0
-; CHECK-NEXT:    [[VEC_PHI:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT5]], <4 x i64> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP1:%.*]] = trunc <4 x i64> [[VEC_PHI]] to <4 x i1>
-; CHECK-NEXT:    [[TMP2:%.*]] = select <4 x i1> [[TMP1]], <4 x double> [[BROADCAST_SPLAT]], <4 x double> [[BROADCAST_SPLAT3]]
+; CHECK-NEXT:    [[TMP1:%.*]] = trunc i64 [[INDVAR24]] to i1
+; CHECK-NEXT:    [[TMP5:%.*]] = select i1 [[TMP1]], double [[A]], double [[B]]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x double> poison, double [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <4 x double> [[BROADCAST_SPLATINSERT]], <4 x double> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    store <4 x double> [[TMP2]], ptr [[TMP4]], align 8
 ; CHECK-NEXT:    [[TMP3]] = add nuw nsw i64 [[INDVAR24]], 1
 ; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[TMP3]], 10000

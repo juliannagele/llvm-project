@@ -224,9 +224,21 @@ bool VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
                 VPIRFlags(*CI), *VPI, CI->getDebugLoc());
           }
         } else if (auto *CI = dyn_cast<CastInst>(Inst)) {
-          NewRecipe = new VPWidenCastRecipe(
-              CI->getOpcode(), Ingredient.getOperand(0), CI->getType(), CI,
-              VPIRFlags(*CI), VPIRMetadata(*CI));
+          // A cast of a single scalar is a single scalar. Keep it scalar so
+          // its users, like uniform inner-loop inductions, can stay scalar.
+          // Its operand dominates it, so it was converted first and
+          // isSingleScalar is accurate for it.
+          // TODO: Remove once narrowToSingleScalarRecipes narrows
+          // VPWidenCastRecipe.
+          VPValue *Op = VPI->getOperand(0);
+          if (vputils::isSingleScalar(Op))
+            NewRecipe = VPBuilder::createSingleScalarOp(
+                CI->getOpcode(), Op, /*Mask=*/nullptr, VPIRFlags(*CI),
+                VPIRMetadata(*CI), VPI->getDebugLoc(), CI->getType(), CI);
+          else
+            NewRecipe =
+                new VPWidenCastRecipe(CI->getOpcode(), Op, CI->getType(), CI,
+                                      VPIRFlags(*CI), VPIRMetadata(*CI));
         } else {
           NewRecipe = new VPWidenRecipe(*Inst, Ingredient.operands(), *VPI,
                                         *VPI, Ingredient.getDebugLoc());

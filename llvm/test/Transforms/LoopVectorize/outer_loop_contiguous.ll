@@ -759,14 +759,16 @@ define void @col_major_sibling_inner_loops(ptr %A) {
 ; CHECK:       [[INNER_BODY1]]:
 ; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP6:%.*]], %[[INNER_BODY1]] ]
 ; CHECK-NEXT:    [[ROW4:%.*]] = phi i8 [ 2, %[[VECTOR_BODY]] ], [ [[TMP5:%.*]], %[[INNER_BODY1]] ]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i8> poison, i8 [[ROW4]], i64 0
-; CHECK-NEXT:    [[ROW3:%.*]] = shufflevector <4 x i8> [[BROADCAST_SPLATINSERT]], <4 x i8> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP0:%.*]] = sext <4 x i8> [[ROW3]] to <4 x i64>
+; CHECK-NEXT:    [[TMP7:%.*]] = sext i8 [[ROW4]] to i64
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[TMP7]], i64 0
+; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP1:%.*]] = shl <4 x i64> [[TMP0]], splat (i64 6)
 ; CHECK-NEXT:    [[TMP2:%.*]] = add <4 x i64> [[TMP1]], [[VEC_IND]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x i32> @llvm.masked.gather.v4i32.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x i32> poison), !llvm.access.group [[ACC_GRP14]]
-; CHECK-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[ROW3]] to <4 x i32>
+; CHECK-NEXT:    [[TMP16:%.*]] = zext i8 [[ROW4]] to i32
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT4:%.*]] = insertelement <4 x i32> poison, i32 [[TMP16]], i64 0
+; CHECK-NEXT:    [[TMP3:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT4]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP4:%.*]] = add <4 x i32> [[WIDE_MASKED_GATHER]], [[TMP3]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4i32.v4p0(<4 x i32> [[TMP4]], <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true)), !llvm.access.group [[ACC_GRP14]]
 ; CHECK-NEXT:    [[TMP5]] = add i8 [[ROW4]], 1
@@ -778,14 +780,16 @@ define void @col_major_sibling_inner_loops(ptr %A) {
 ; CHECK:       [[INNER2_BODY5]]:
 ; CHECK-NEXT:    [[INNER2_IV6:%.*]] = phi i64 [ 0, %[[INNER2_PH4]] ], [ [[TMP14:%.*]], %[[INNER2_BODY5]] ]
 ; CHECK-NEXT:    [[ROW28:%.*]] = phi i8 [ 2, %[[INNER2_PH4]] ], [ [[TMP15:%.*]], %[[INNER2_BODY5]] ]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT8:%.*]] = insertelement <4 x i8> poison, i8 [[ROW28]], i64 0
-; CHECK-NEXT:    [[ROW27:%.*]] = shufflevector <4 x i8> [[BROADCAST_SPLATINSERT8]], <4 x i8> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP9:%.*]] = sext <4 x i8> [[ROW27]] to <4 x i64>
+; CHECK-NEXT:    [[TMP19:%.*]] = sext i8 [[ROW28]] to i64
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT10:%.*]] = insertelement <4 x i64> poison, i64 [[TMP19]], i64 0
+; CHECK-NEXT:    [[TMP9:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT10]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP10:%.*]] = shl <4 x i64> [[TMP9]], splat (i64 6)
 ; CHECK-NEXT:    [[TMP11:%.*]] = add <4 x i64> [[TMP10]], [[VEC_IND]]
 ; CHECK-NEXT:    [[WIDE_GEP8:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP11]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER9:%.*]] = call <4 x i32> @llvm.masked.gather.v4i32.v4p0(<4 x ptr> align 4 [[WIDE_GEP8]], <4 x i1> splat (i1 true), <4 x i32> poison), !llvm.access.group [[ACC_GRP14]]
-; CHECK-NEXT:    [[TMP12:%.*]] = zext <4 x i8> [[ROW27]] to <4 x i32>
+; CHECK-NEXT:    [[TMP20:%.*]] = zext i8 [[ROW28]] to i32
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT14:%.*]] = insertelement <4 x i32> poison, i32 [[TMP20]], i64 0
+; CHECK-NEXT:    [[TMP12:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT14]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP13:%.*]] = add <4 x i32> [[WIDE_MASKED_GATHER9]], [[TMP12]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4i32.v4p0(<4 x i32> [[TMP13]], <4 x ptr> align 4 [[WIDE_GEP8]], <4 x i1> splat (i1 true)), !llvm.access.group [[ACC_GRP14]]
 ; CHECK-NEXT:    [[TMP15]] = add i8 [[ROW28]], 1
@@ -871,14 +875,16 @@ define void @col_major_nested_inner_loops(ptr %A) {
 ; CHECK:       [[INNER_BODY3]]:
 ; CHECK-NEXT:    [[INNER_IV4:%.*]] = phi i64 [ 0, %[[MID_HEADER1]] ], [ [[TMP6:%.*]], %[[INNER_BODY3]] ]
 ; CHECK-NEXT:    [[ROW6:%.*]] = phi i8 [ 2, %[[MID_HEADER1]] ], [ [[TMP5:%.*]], %[[INNER_BODY3]] ]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i8> poison, i8 [[ROW6]], i64 0
-; CHECK-NEXT:    [[ROW5:%.*]] = shufflevector <4 x i8> [[BROADCAST_SPLATINSERT]], <4 x i8> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP0:%.*]] = sext <4 x i8> [[ROW5]] to <4 x i64>
+; CHECK-NEXT:    [[TMP7:%.*]] = sext i8 [[ROW6]] to i64
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[TMP7]], i64 0
+; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP1:%.*]] = shl <4 x i64> [[TMP0]], splat (i64 6)
 ; CHECK-NEXT:    [[TMP2:%.*]] = add <4 x i64> [[TMP1]], [[VEC_IND]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x i32> @llvm.masked.gather.v4i32.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x i32> poison), !llvm.access.group [[ACC_GRP14]]
-; CHECK-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[ROW5]] to <4 x i32>
+; CHECK-NEXT:    [[TMP10:%.*]] = zext i8 [[ROW6]] to i32
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT6:%.*]] = insertelement <4 x i32> poison, i32 [[TMP10]], i64 0
+; CHECK-NEXT:    [[TMP3:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT6]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP4:%.*]] = add <4 x i32> [[WIDE_MASKED_GATHER]], [[TMP3]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4i32.v4p0(<4 x i32> [[TMP4]], <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true)), !llvm.access.group [[ACC_GRP14]]
 ; CHECK-NEXT:    [[TMP5]] = add i8 [[ROW6]], 1

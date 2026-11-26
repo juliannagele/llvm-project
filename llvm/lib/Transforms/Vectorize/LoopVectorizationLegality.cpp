@@ -574,12 +574,88 @@ static bool canVectorizeOperandBundles(Instruction &I,
   return false;
 }
 
+/// Returns true if \p V has the same value in all iterations of \p OuterLoop
+/// that execute it in the same iteration of the loops nested in \p OuterLoop.
+/// This holds for:
+/// - loop-invariant and SCEV loop-uniform values;
+/// - values whose SCEV has no AddRec of \p OuterLoop and is built from uniform
+///   values, like an inner-loop AddRec whose start is a uniform load;
+/// - simple loads from uniform addresses;
+/// - arithmetic, casts, compares, selects and GEPs of uniform values.
+///
+/// In a vector iteration, all lanes of a load from a uniform address read one
+/// location at one point, so they get the same value. Whether that value is
+/// the one each iteration of the scalar loop reads is the memory-safety
+/// question the VPlan-native path already answers for the load itself: it
+/// trusts the explicit vectorization pragma, or, with
+/// -vplan-outer-loop-legality-checks, proveOuterLoopMemorySafety proves it. So
+/// treating the load as uniform adds no assumption.
+///
+/// Results are cached in \p Cache. A false result because of the recursion
+/// limit is cached too, which is conservative.
+static bool isUniformAcrossOuterLoopIterations(
+    Value *V, Loop *OuterLoop, PredicatedScalarEvolution &PSE,
+    SmallDenseMap<const Value *, bool> &Cache, unsigned Depth = 0) {
+  if (OuterLoop->isLoopInvariant(V))
+    return true;
+  if (auto It = Cache.find(V); It != Cache.end())
+    return It->second;
+  if (Depth == MaxAnalysisRecursionDepth)
+    return false;
+
+  auto IsUniform = [&](Value *Op) {
+    return isUniformAcrossOuterLoopIterations(Op, OuterLoop, PSE, Cache,
+                                              Depth + 1);
+  };
+  auto Compute = [&]() {
+    ScalarEvolution &SE = *PSE.getSE();
+    if (SE.isSCEVable(V->getType())) {
+      const SCEV *S = PSE.getSCEV(V);
+      if (SE.isLoopUniform(S, OuterLoop))
+        return true;
+      // Look through the SCEV expression: it is uniform if it has no AddRec
+      // of OuterLoop and all values it is built from are uniform. All lanes
+      // execute the iterations of loops nested in OuterLoop together, so
+      // their AddRecs are uniform if their operands are, which the traversal
+      // checks. An AddRec of any other loop, which contains OuterLoop or is
+      // disjoint from it, is uniform if it is invariant in OuterLoop.
+      if (!isa<SCEVUnknown>(S))
+        return !SCEVExprContains(S, [&](const SCEV *Op) {
+          if (auto *AR = dyn_cast<SCEVAddRecExpr>(Op)) {
+            const Loop *L = AR->getLoop();
+            bool IsNested = L != OuterLoop && OuterLoop->contains(L);
+            return !IsNested && !SE.isLoopInvariant(AR, OuterLoop);
+          }
+          if (auto *U = dyn_cast<SCEVUnknown>(Op))
+            return !IsUniform(U->getValue());
+          return false;
+        });
+    }
+
+    auto *I = cast<Instruction>(V);
+    // Volatile and atomic loads are rejected earlier; check anyway so this
+    // function is correct on its own.
+    if (auto *LI = dyn_cast<LoadInst>(I))
+      return LI->isSimple() && IsUniform(LI->getPointerOperand());
+    // Freeze is not uniform: a vector freeze may pick different values for
+    // the lanes of a poison vector.
+    if (!isa<BinaryOperator, CastInst, CmpInst, SelectInst, GetElementPtrInst>(
+            I))
+      return false;
+    return all_of(I->operands(), IsUniform);
+  };
+  bool Result = Compute();
+  Cache[V] = Result;
+  return Result;
+}
+
 bool LoopVectorizationLegality::canVectorizeOuterLoop() {
   assert(!TheLoop->isInnermost() && "We are not vectorizing an outer loop.");
   // Store the result and return it at the end instead of exiting early, in case
   // allowExtraAnalysis is used to report multiple reasons for not vectorizing.
   bool Result = true;
   bool DoExtraAnalysis = ORE->allowExtraAnalysis(DEBUG_TYPE);
+  SmallDenseMap<const Value *, bool> UniformityCache;
 
   for (BasicBlock *BB : TheLoop->blocks()) {
     // Instructions in the loop nest are widened, so the types they produce and
@@ -632,23 +708,11 @@ bool LoopVectorizationLegality::canVectorizeOuterLoop() {
     // once VPlan predication is on by default.
     auto *Br = dyn_cast<CondBrInst>(Term);
     if (Br && !TheLoop->isLoopLatch(BB)) {
-      bool IsUniformCondBr = TheLoop->isLoopInvariant(Br->getCondition());
-
-      Value *Lhs = nullptr;
-      Value *Rhs = nullptr;
-      auto *SE = PSE.getSE();
-      if (match(Br->getCondition(), m_c_ICmp(m_Value(Lhs), m_Value(Rhs))) &&
-          !IsUniformCondBr && SE->isSCEVable(Lhs->getType())) {
-        const SCEV *LhsExpr = PSE.getSCEV(Lhs);
-        const SCEV *RhsExpr = PSE.getSCEV(Rhs);
-        IsUniformCondBr |= (SE->isLoopUniform(LhsExpr, TheLoop) &&
-                            SE->isLoopUniform(RhsExpr, TheLoop));
-      }
-
       // If the condition is not uniform, report a failure. We currently require
       // uniform conditions to avoid the complexity of vectorizing divergent
       // control flow in the outer loop.
-      if (!IsUniformCondBr) {
+      if (!isUniformAcrossOuterLoopIterations(Br->getCondition(), TheLoop, PSE,
+                                              UniformityCache)) {
         reportVectorizationFailure(
             "Outer loop contains divergent conditional branch",
             "loop control flow is not understood by vectorizer",

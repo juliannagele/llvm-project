@@ -177,9 +177,9 @@ define void @non_outermost_loop_hcfg_construction_other_loops_at_same_level(i64 
 ; CHECK:       [[INNERMOST_LOOP3]]:
 ; CHECK-NEXT:    [[X2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP6:%.*]], %[[INNERMOST_LOOP3]] ]
 ; CHECK-NEXT:    [[TMP3:%.*]] = add nuw nsw i64 [[ADD]], [[X2]]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[TMP3]], i64 0
-; CHECK-NEXT:    [[TMP1:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = trunc <4 x i64> [[TMP1]] to <4 x i32>
+; CHECK-NEXT:    [[TMP9:%.*]] = trunc i64 [[TMP3]] to i32
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i32> poison, i32 [[TMP9]], i64 0
+; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP8:%.*]] = getelementptr ptr, ptr [[INVARIANT_GEP]], i64 [[X2]]
 ; CHECK-NEXT:    [[TMP5:%.*]] = load ptr, ptr [[TMP8]], align 8
 ; CHECK-NEXT:    [[TMP4:%.*]] = getelementptr inbounds [4 x i8], ptr [[TMP5]], <4 x i64> [[VEC_IND]]

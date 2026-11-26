@@ -719,20 +719,20 @@ define void @i32_iv_sext(ptr noalias %a, ptr noalias %w, i64 %N, i32 %M) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i32, ptr [[A]], i64 [[INDEX]]
 ; CHECK-NEXT:    br label %[[INNER1:.*]]
 ; CHECK:       [[INNER1]]:
-; CHECK-NEXT:    [[J2:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER1]] ]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i32> poison, i32 [[J2]], i64 0
+; CHECK-NEXT:    [[J2:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP5:%.*]], %[[INNER1]] ]
+; CHECK-NEXT:    [[TMP2:%.*]] = sext i32 [[J2]] to i64
+; CHECK-NEXT:    [[TMP3:%.*]] = getelementptr inbounds i32, ptr [[W]], i64 [[TMP2]]
+; CHECK-NEXT:    [[TMP4:%.*]] = load i32, ptr [[TMP3]], align 4
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i32> poison, i32 [[TMP4]], i64 0
 ; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT]], <4 x i32> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = sext <4 x i32> [[BROADCAST_SPLAT]] to <4 x i64>
-; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[W]], <4 x i64> [[TMP2]]
-; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x i32> @llvm.masked.gather.v4i32.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x i32> poison)
-; CHECK-NEXT:    store <4 x i32> [[WIDE_MASKED_GATHER]], ptr [[TMP1]], align 4
-; CHECK-NEXT:    [[TMP3]] = add nuw nsw i32 [[J2]], 1
-; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq i32 [[TMP3]], [[M]]
-; CHECK-NEXT:    br i1 [[TMP4]], label %[[OUTER_LATCH3]], label %[[INNER1]]
+; CHECK-NEXT:    store <4 x i32> [[BROADCAST_SPLAT]], ptr [[TMP1]], align 4
+; CHECK-NEXT:    [[TMP5]] = add nuw nsw i32 [[J2]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i32 [[TMP5]], [[M]]
+; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH3]], label %[[INNER1]]
 ; CHECK:       [[OUTER_LATCH3]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
-; CHECK-NEXT:    br i1 [[TMP5]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP22:![0-9]+]]
+; CHECK-NEXT:    [[TMP7:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
+; CHECK-NEXT:    br i1 [[TMP7]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP22:![0-9]+]]
 ; CHECK:       [[MIDDLE_BLOCK]]:
 ; CHECK-NEXT:    [[CMP_N:%.*]] = icmp eq i64 [[N]], [[N_VEC]]
 ; CHECK-NEXT:    br i1 [[CMP_N]], [[EXIT:label %.*]], label %[[SCALAR_PH]]

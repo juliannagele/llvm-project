@@ -150,8 +150,6 @@ define void @inner_latch_cmp_on_trunc(ptr %A, i64 %N, i32 %bound, i64 %start) {
 ; CHECK:       [[VECTOR_PH]]:
 ; CHECK-NEXT:    [[TMP0:%.*]] = and i64 [[N]], 3
 ; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[N]], [[TMP0]]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i32> poison, i32 [[BOUND]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[OUTER_LATCH5:.*]] ]
@@ -166,11 +164,8 @@ define void @inner_latch_cmp_on_trunc(ptr %A, i64 %N, i32 %bound, i64 %start) {
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
 ; CHECK-NEXT:    [[TMP8]] = add nsw i64 [[INNER_IV2]], 1
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT5:%.*]] = insertelement <4 x i64> poison, i64 [[TMP8]], i64 0
-; CHECK-NEXT:    [[TMP3:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT5]], <4 x i64> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP4:%.*]] = trunc <4 x i64> [[TMP3]] to <4 x i32>
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i32> [[BROADCAST_SPLAT]], [[TMP4]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4:%.*]] = trunc i64 [[TMP8]] to i32
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i32 [[BOUND]], [[TMP4]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH5]], label %[[INNER_BODY3]]
 ; CHECK:       [[OUTER_LATCH5]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
@@ -387,9 +382,9 @@ define void @inner_latch_continue_while_eq(ptr %A, i64 %N, i64 %M, i32 %X) {
 ; CHECK-NEXT:    br label %[[INNER_BODY3:.*]]
 ; CHECK:       [[INNER_BODY3]]:
 ; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY3]] ]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i32> poison, i32 [[INNER_IV2]], i64 0
-; CHECK-NEXT:    [[INNER_IV4:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT3]], <4 x i32> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = zext <4 x i32> [[INNER_IV4]] to <4 x i64>
+; CHECK-NEXT:    [[TMP5:%.*]] = zext i32 [[INNER_IV2]] to i64
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP3:%.*]] = add nsw <4 x i64> [[TMP1]], [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP3]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
@@ -454,9 +449,9 @@ define void @inner_latch_continue_while_ule(ptr %A, i64 %N, i64 %M, i32 %X) {
 ; CHECK-NEXT:    br label %[[INNER_BODY3:.*]]
 ; CHECK:       [[INNER_BODY3]]:
 ; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY3]] ]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i32> poison, i32 [[INNER_IV2]], i64 0
-; CHECK-NEXT:    [[INNER_IV4:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT3]], <4 x i32> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = zext <4 x i32> [[INNER_IV4]] to <4 x i64>
+; CHECK-NEXT:    [[TMP5:%.*]] = zext i32 [[INNER_IV2]] to i64
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP3:%.*]] = add nsw <4 x i64> [[TMP1]], [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP3]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
