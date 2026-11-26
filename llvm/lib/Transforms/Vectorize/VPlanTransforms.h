@@ -377,6 +377,18 @@ struct VPlanTransforms {
           &InterleaveGroups,
       const bool &EpilogueAllowed);
 
+  /// Form interleave groups in the outer-loop plan \p Plan, which vectorizes
+  /// \p OuterLoop, and replace their members with VPInterleaveRecipes. A group
+  /// consists of non-consecutive, unmasked loads or stores in one block whose
+  /// addresses have the same constant stride Factor in \p OuterLoop and
+  /// cover all Factor elements. \p HeaderVPBBToLoop maps the headers of nested
+  /// loop regions to their IR loops (see vputils::getNestedLoopHeaders). The
+  /// new groups are appended to \p Groups, which must outlive \p Plan.
+  static void createOuterLoopInterleaveGroups(
+      VPlan &Plan, PredicatedScalarEvolution &PSE, const Loop &OuterLoop,
+      const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop,
+      SmallVectorImpl<std::unique_ptr<InterleaveGroup<Instruction>>> &Groups);
+
   /// Transform widen memory recipes into strided access recipes when legal
   /// and profitable. Clamps \p Range to maintain consistency with widen
   /// decisions of \p Plan, and uses \p Ctx to evaluate the cost.

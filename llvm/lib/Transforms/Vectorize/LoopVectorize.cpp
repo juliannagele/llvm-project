@@ -1534,6 +1534,14 @@ static bool isIndvarOverflowCheckKnownFalse(
   return false;
 }
 
+// Return whether we allow using interleave-groups.
+static bool useInterleavedAccesses(const VectorizeOptions &Opts,
+                                   const TargetTransformInfo &TTI) {
+  // If an override option has been passed in for interleaved accesses, use it.
+  return valueOr(Opts.enable_interleaved_mem_accesses,
+                 TTI.enableInterleavedAccessVectorization());
+}
+
 // Return whether we allow using masked interleave-groups (for dealing with
 // strided loads/stores that reside in predicated blocks, or for dealing
 // with gaps).
@@ -6341,9 +6349,9 @@ VPlanPtr
 LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan, VFRange &Range,
                                           LoopVectorizationCostModel &PlanCM) {
 
-  // For outer loops, the plan only needs basic recipe conversion and induction
-  // live-out optimization; the full inner-loop recipe building below does not
-  // apply (no widening decisions, interleave groups, reductions, etc.).
+  // For outer loops, the plan only needs basic recipe conversion, interleave
+  // groups and induction live-out optimization; the full inner-loop recipe
+  // building below does not apply (no widening decisions, reductions, etc.).
   if (Plan->isOuterLoop()) {
     for (ElementCount VF : Range)
       Plan->addVF(VF);
@@ -6352,6 +6360,10 @@ LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan, VFRange &Range,
     if (!RUN_VPLAN_PASS(VPlanTransforms::tryToConvertVPInstructionsToVPRecipes,
                         *Plan, *TLI, PSE, OrigLoop, HeaderVPBBToLoop))
       return nullptr;
+    if (useInterleavedAccesses(Opts, TTI))
+      RUN_VPLAN_PASS(VPlanTransforms::createOuterLoopInterleaveGroups, *Plan,
+                     PSE, *OrigLoop, HeaderVPBBToLoop,
+                     OuterLoopInterleaveGroups);
     RUN_VPLAN_PASS(VPlanTransforms::optimizeInductionLiveOutUsers, *Plan, PSE,
                    OrigLoop);
     return Plan;
@@ -7556,10 +7568,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
   }
 
   InterleavedAccessInfo IAI(PSE, L, DT, LI, LVL.getLAI(), OptForSize);
-  // If an override option has been passed in for interleaved accesses, use it.
-  bool UseInterleaved =
-      IsInnerLoop && valueOr(Opts.enable_interleaved_mem_accesses,
-                             TTI->enableInterleavedAccessVectorization());
+  bool UseInterleaved = IsInnerLoop && useInterleavedAccesses(Opts, *TTI);
 
   // Analyze interleaved memory accesses.
   if (UseInterleaved) {

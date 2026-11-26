@@ -91,6 +91,17 @@ std::optional<int64_t> getConstantStride(VPValue *Addr, Type *AccessTy,
                                          PredicatedScalarEvolution &PSE,
                                          const Loop *L);
 
+/// Returns the distance in bytes between the address \p Addr of a lane and of
+/// the next lane, i.e. between consecutive iterations of \p OuterLoop, the
+/// loop vectorized by an outer-loop plan. In VPlan SCEVs, values that differ
+/// between lanes are modeled by AddRecs of \p OuterLoop. The other parts of
+/// \p Addr are the same for all lanes: invariant values, loads from uniform
+/// addresses, and AddRecs of nested loops, whose iterations all lanes execute
+/// together. These parts cancel out. Unlike getConstantStride, this also sees
+/// the stride in \p OuterLoop of an AddRec of a nested loop.
+const SCEV *getLaneDistance(const SCEV *Addr, const Loop &OuterLoop,
+                            ScalarEvolution &SE);
+
 /// Returns true if \p Addr is an address SCEV that can be passed to
 /// TTI::getAddressComputationCost, i.e. the address SCEV is loop invariant, an
 /// affine AddRec (i.e. induction ), or an add expression of such operands or a

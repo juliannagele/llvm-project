@@ -1365,6 +1365,10 @@ InterleavedAccessInfo::InterleavedAccessInfo(PredicatedScalarEvolution &PSE,
     : Opts(getAnalysisOptions(*L)), PSE(PSE), TheLoop(L), DT(DT), LI(LI),
       LAI(LAI), OptForSize(OptForSize) {}
 
+unsigned llvm::getMaxInterleaveGroupFactor(const LLVMContext &C) {
+  return getAnalysisOptions(C).max_interleave_group_factor;
+}
+
 bool InterleavedAccessInfo::isStrided(int Stride) const {
   unsigned Factor = std::abs(Stride);
   return Factor >= 2 && Factor <= Opts.max_interleave_group_factor;

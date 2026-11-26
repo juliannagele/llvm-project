@@ -923,6 +923,13 @@ class LoopVectorizationPlanner {
   /// Lazily fetch BranchProbabilityInfo, independent of BlockFrequencyInfo.
   std::function<const BranchProbabilityInfo &()> GetBPI;
 
+  /// Interleave groups of outer-loop plans. For inner loops, the groups are
+  /// owned by InterleavedAccessInfo, which outlives the planner; outer-loop
+  /// groups are formed on each VPlan, so the planner owns them. Declared before
+  /// VPlans, so the groups outlive the VPInterleaveRecipes referring to them.
+  SmallVector<std::unique_ptr<InterleaveGroup<Instruction>>, 2>
+      OuterLoopInterleaveGroups;
+
   SmallVector<VPlanPtr, 4> VPlans;
 
   /// Profitable vector factors.

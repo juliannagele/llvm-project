@@ -3047,9 +3047,11 @@ void VPlanTransforms::createInterleaveGroups(
   if (InterleaveGroups.empty())
     return;
 
+  // Members may be in loop regions nested in the vector loop region of
+  // outer-loop plans.
   DenseMap<Instruction *, VPWidenMemoryRecipe *> IRMemberToRecipe;
   for (VPBasicBlock *VPBB :
-       VPBlockUtils::blocksOnly<VPBasicBlock>(vp_depth_first_shallow(
+       VPBlockUtils::blocksOnly<VPBasicBlock>(vp_depth_first_deep(
            Plan.getVectorLoopRegion()->getEntryBasicBlock())))
     for (VPWidenMemoryRecipe *MemR :
          make_isa_range<VPWidenMemoryRecipe>(make_pointer_range(*VPBB)))
@@ -3163,6 +3165,192 @@ void VPlanTransforms::createInterleaveGroups(
           MemberR->getAsRecipe()->eraseFromParent();
       }
   }
+}
+
+namespace {
+/// A load or store in an outer-loop plan that may become a member of an
+/// interleave group, with its address and the distance in bytes between the
+/// addresses of consecutive lanes.
+struct GroupCandidate {
+  Instruction *I;
+  const SCEV *Addr;
+  const SCEV *LaneDist;
+};
+} // namespace
+
+/// Returns a candidate for the load or store \p I with address \p Addr, if its
+/// stride in \p OuterLoop is a constant > 1.
+static std::optional<GroupCandidate> getGroupCandidate(
+    Instruction &I, VPValue *Addr, PredicatedScalarEvolution &PSE,
+    const Loop &OuterLoop,
+    const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop) {
+  ScalarEvolution &SE = *PSE.getSE();
+  const DataLayout &DL = I.getDataLayout();
+  Type *AccessTy = getLoadStoreType(&I);
+  if (hasIrregularType(AccessTy, DL))
+    return std::nullopt;
+  const SCEV *AddrSCEV = vputils::getSCEVExprForVPValue(
+      Addr, PSE, {&OuterLoop, &HeaderVPBBToLoop});
+  if (isa<SCEVCouldNotCompute>(AddrSCEV))
+    return std::nullopt;
+  const SCEV *LaneDist = vputils::getLaneDistance(AddrSCEV, OuterLoop, SE);
+  const APInt *Dist;
+  if (!match(LaneDist, m_scev_APInt(Dist)))
+    return std::nullopt;
+  std::optional<int64_t> DistInBytes = Dist->trySExtValue();
+  int64_t Size = DL.getTypeAllocSize(AccessTy).getFixedValue();
+  // TODO: Support reverse groups.
+  if (!DistInBytes || *DistInBytes % Size != 0 || *DistInBytes / Size < 2)
+    return std::nullopt;
+  return GroupCandidate{&I, AddrSCEV, LaneDist};
+}
+
+/// Calls \p FormGroups for the runs of candidates in each block of \p Blocks:
+/// loads or stores in program order with no recipe between them that may
+/// conflict with them. A run ends at a recipe that may write memory, or, for
+/// stores, also at one that may read memory. Without alias information, any
+/// such recipe may access the same memory.
+static void forEachCandidateRun(
+    ArrayRef<VPBasicBlock *> Blocks,
+    function_ref<std::optional<GroupCandidate>(VPRecipeBase &)> GetCandidate,
+    function_ref<void(ArrayRef<GroupCandidate>)> FormGroups) {
+  for (VPBasicBlock *VPBB : Blocks) {
+    SmallVector<GroupCandidate> Run;
+    bool RunIsLoad = false;
+    for (VPRecipeBase &R : *VPBB) {
+      std::optional<GroupCandidate> C = GetCandidate(R);
+      bool IsLoad = C && isa<LoadInst>(C->I);
+      if (C && (Run.empty() || IsLoad == RunIsLoad)) {
+        Run.push_back(*C);
+        RunIsLoad = IsLoad;
+        continue;
+      }
+      if (!C && !R.mayWriteToMemory() && (RunIsLoad || !R.mayReadFromMemory()))
+        continue;
+      FormGroups(Run);
+      Run.clear();
+      if (C) {
+        Run.push_back(*C);
+        RunIsLoad = IsLoad;
+      }
+    }
+    FormGroups(Run);
+  }
+}
+
+/// Returns the full interleave groups formed from the candidates of \p Run
+/// (see forEachCandidateRun). A load group is emitted at its first member, so
+/// loads only move across loads. A store group is emitted at its last member,
+/// so its members must be adjacent in the run; stores then only move across
+/// stores to other members of the group. Full groups need no no-wrap checks,
+/// for the reasons given in InterleavedAccessInfo::collectConstStrideAccesses.
+/// The factor of a group is its stride in elements.
+/// TODO: Use alias information to form groups across other accesses, and
+/// support groups with gaps.
+static SmallVector<std::unique_ptr<InterleaveGroup<Instruction>>>
+formFullGroups(ArrayRef<GroupCandidate> Run, ScalarEvolution &SE,
+               const DataLayout &DL, int64_t MaxFactor) {
+  SmallVector<std::unique_ptr<InterleaveGroup<Instruction>>> Groups;
+  // Returns the index of \p C relative to \p Leader if \p C may be a member of
+  // the group of \p Leader.
+  auto GetIndex = [&](const GroupCandidate &Leader,
+                      const GroupCandidate &C) -> std::optional<int64_t> {
+    Type *AccessTy = getLoadStoreType(Leader.I);
+    if (C.LaneDist != Leader.LaneDist || getLoadStoreType(C.I) != AccessTy ||
+        C.Addr->getType() != Leader.Addr->getType())
+      return std::nullopt;
+    const APInt *Dist;
+    if (!match(SE.getMinusSCEV(C.Addr, Leader.Addr), m_scev_APInt(Dist)))
+      return std::nullopt;
+    std::optional<int64_t> DistInBytes = Dist->trySExtValue();
+    int64_t Size = DL.getTypeAllocSize(AccessTy).getFixedValue();
+    if (!DistInBytes || *DistInBytes % Size != 0)
+      return std::nullopt;
+    return *DistInBytes / Size;
+  };
+  SmallVector<bool> Grouped(Run.size(), false);
+  for (auto [LeaderIdx, Leader] : enumerate(Run)) {
+    if (Grouped[LeaderIdx])
+      continue;
+    // A full group needs Factor members.
+    int64_t Factor =
+        cast<SCEVConstant>(Leader.LaneDist)->getAPInt().getSExtValue() /
+        DL.getTypeAllocSize(getLoadStoreType(Leader.I)).getFixedValue();
+    if (Factor > MaxFactor || Factor > static_cast<int64_t>(Run.size()))
+      continue;
+    auto Group = std::make_unique<InterleaveGroup<Instruction>>(
+        Leader.I, Factor, getLoadStoreAlignment(Leader.I));
+    SmallVector<unsigned> MemberIdxs = {static_cast<unsigned>(LeaderIdx)};
+    for (auto [Idx, C] : enumerate(Run)) {
+      if (Idx == LeaderIdx || Grouped[Idx])
+        continue;
+      std::optional<int64_t> Offset = GetIndex(Leader, C);
+      if (!Offset)
+        continue;
+      // insertMember takes the index relative to the current member 0, which
+      // may no longer be the leader, as an int32_t; reject wider indices
+      // instead of truncating them.
+      int64_t Index = Group->getIndex(Leader.I) + *Offset;
+      if (isInt<32>(Index) &&
+          Group->insertMember(C.I, Index, getLoadStoreAlignment(C.I)))
+        MemberIdxs.push_back(Idx);
+    }
+    if (!Group->isFull())
+      continue;
+    sort(MemberIdxs);
+    bool IsLoad = isa<LoadInst>(Leader.I);
+    if (!IsLoad && MemberIdxs.back() - MemberIdxs.front() + 1 !=
+                       static_cast<unsigned>(Factor))
+      continue;
+    Group->setInsertPos(Run[IsLoad ? MemberIdxs.front() : MemberIdxs.back()].I);
+    for (unsigned Idx : MemberIdxs)
+      Grouped[Idx] = true;
+    Groups.push_back(std::move(Group));
+  }
+  return Groups;
+}
+
+/// Returns the maximum interleave factor of groups in a plan, with scalable
+/// VFs if \p IsScalable.
+static int64_t getMaxOuterLoopGroupFactor(const Loop &OuterLoop,
+                                          bool IsScalable) {
+  int64_t MaxFactor =
+      getMaxInterleaveGroupFactor(OuterLoop.getHeader()->getContext());
+  // Scalable VFs support interleave factors up to 8 only.
+  return IsScalable ? std::min<int64_t>(MaxFactor, 8) : MaxFactor;
+}
+
+void VPlanTransforms::createOuterLoopInterleaveGroups(
+    VPlan &Plan, PredicatedScalarEvolution &PSE, const Loop &OuterLoop,
+    const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop,
+    SmallVectorImpl<std::unique_ptr<InterleaveGroup<Instruction>>> &Groups) {
+  if (Plan.hasScalarVFOnly())
+    return;
+  int64_t MaxFactor =
+      getMaxOuterLoopGroupFactor(OuterLoop, Plan.hasScalableVF());
+  SmallPtrSet<const InterleaveGroup<Instruction> *, 4> NewGroups;
+  forEachCandidateRun(
+      to_vector(VPBlockUtils::blocksOnly<VPBasicBlock>(vp_depth_first_deep(
+          Plan.getVectorLoopRegion()->getEntryBasicBlock()))),
+      [&](VPRecipeBase &R) -> std::optional<GroupCandidate> {
+        auto *MemR = dyn_cast<VPWidenMemoryRecipe>(&R);
+        if (!MemR || MemR->isConsecutive() || MemR->isMasked())
+          return std::nullopt;
+        return getGroupCandidate(MemR->getIngredient(), MemR->getAddr(), PSE,
+                                 OuterLoop, HeaderVPBBToLoop);
+      },
+      [&](ArrayRef<GroupCandidate> Run) {
+        for (std::unique_ptr<InterleaveGroup<Instruction>> &Group :
+             formFullGroups(Run, *PSE.getSE(), Plan.getDataLayout(),
+                            MaxFactor)) {
+          NewGroups.insert(Group.get());
+          Groups.push_back(std::move(Group));
+        }
+      });
+
+  // The groups are full, so they never require a scalar epilogue.
+  bool EpilogueAllowed = true;
+  createInterleaveGroups(Plan, NewGroups, EpilogueAllowed);
 }
 
 /// Matches an exit condition formed by comparing a value loaded from memory

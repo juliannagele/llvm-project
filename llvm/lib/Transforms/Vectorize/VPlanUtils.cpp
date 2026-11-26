@@ -21,6 +21,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Analysis/ScalarEvolutionNormalization.h"
 #include "llvm/Analysis/ScalarEvolutionPatternMatch.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/ProfDataUtils.h"
@@ -517,6 +518,12 @@ vputils::getConstantStride(VPValue *Addr, Type *AccessTy,
     return {};
 
   return getStrideFromAddRec(AddRec, L, AccessTy, /*Ptr=*/nullptr, PSE);
+}
+
+const SCEV *vputils::getLaneDistance(const SCEV *Addr, const Loop &OuterLoop,
+                                     ScalarEvolution &SE) {
+  const SCEV *NextAddr = denormalizeForPostIncUse(Addr, {&OuterLoop}, SE);
+  return SE.getMinusSCEV(NextAddr, Addr);
 }
 
 bool vputils::isAddressSCEVForCost(const SCEV *Addr, ScalarEvolution &SE,

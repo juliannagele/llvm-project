@@ -681,6 +681,10 @@ private:
   InstTy *InsertPos;
 };
 
+/// Returns the maximum factor of an interleave group (option
+/// max-interleave-group-factor).
+LLVM_ABI unsigned getMaxInterleaveGroupFactor(const LLVMContext &C);
+
 /// Drive the analysis of interleaved memory accesses in the loop.
 ///
 /// Use this class to analyze interleaved accesses only when we can vectorize
