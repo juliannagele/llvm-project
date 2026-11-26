@@ -22,14 +22,15 @@ define void @foo() vscale_range(1,16) {
 ; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <vscale x 4 x float>, ptr [[TMP2]], align 4
 ; CHECK-NEXT:    br label %[[INNER_LOOP1:.*]]
 ; CHECK:       [[INNER_LOOP1]]:
-; CHECK-NEXT:    [[J2:%.*]] = phi <vscale x 4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_LOOP1]] ]
+; CHECK-NEXT:    [[J2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP8:%.*]], %[[INNER_LOOP1]] ]
 ; CHECK-NEXT:    [[X3:%.*]] = phi <vscale x 4 x float> [ [[WIDE_LOAD]], %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_LOOP1]] ]
-; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr @B, <vscale x 4 x i64> [[J2]]
-; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <vscale x 4 x float> @llvm.masked.gather.nxv4f32.nxv4p0(<vscale x 4 x ptr> align 4 [[WIDE_GEP]], <vscale x 4 x i1> splat (i1 true), <vscale x 4 x float> poison)
-; CHECK-NEXT:    [[TMP3]] = fmul <vscale x 4 x float> [[X3]], [[WIDE_MASKED_GATHER]]
-; CHECK-NEXT:    [[TMP4]] = add nuw nsw <vscale x 4 x i64> [[J2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <vscale x 4 x i64> [[TMP4]], splat (i64 512)
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <vscale x 4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP5:%.*]] = getelementptr inbounds [512 x float], ptr @B, i64 0, i64 [[J2]]
+; CHECK-NEXT:    [[TMP4:%.*]] = load float, ptr [[TMP5]], align 4
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <vscale x 4 x float> poison, float [[TMP4]], i64 0
+; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <vscale x 4 x float> [[BROADCAST_SPLATINSERT]], <vscale x 4 x float> poison, <vscale x 4 x i32> zeroinitializer
+; CHECK-NEXT:    [[TMP3]] = fmul <vscale x 4 x float> [[X3]], [[BROADCAST_SPLAT]]
+; CHECK-NEXT:    [[TMP8]] = add nuw nsw i64 [[J2]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[TMP8]], 512
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LOOP_LATCH4]], label %[[INNER_LOOP1]]
 ; CHECK:       [[OUTER_LOOP_LATCH4]]:
 ; CHECK-NEXT:    store <vscale x 4 x float> [[TMP3]], ptr [[TMP2]], align 4
@@ -115,7 +116,9 @@ define void @col_major_m8(ptr noalias %A, i64 %N) vscale_range(1,16) {
 ; CHECK-NEXT:    [[VEC_IND:%.*]] = phi <vscale x 4 x i64> [ [[TMP2]], %[[VECTOR_PH]] ], [ [[VEC_IND_NEXT:%.*]], %[[OUTER_LATCH3]] ]
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <vscale x 4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP7:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[INNER_IV3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP7:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <vscale x 4 x i64> poison, i64 [[INNER_IV3]], i64 0
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = shufflevector <vscale x 4 x i64> [[BROADCAST_SPLATINSERT3]], <vscale x 4 x i64> poison, <vscale x 4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP3:%.*]] = shl nsw <vscale x 4 x i64> [[INNER_IV2]], splat (i64 3)
 ; CHECK-NEXT:    [[TMP4:%.*]] = add nsw <vscale x 4 x i64> [[VEC_IND]], [[TMP3]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <vscale x 4 x i64> [[TMP4]]
@@ -123,9 +126,8 @@ define void @col_major_m8(ptr noalias %A, i64 %N) vscale_range(1,16) {
 ; CHECK-NEXT:    [[TMP5:%.*]] = sitofp <vscale x 4 x i64> [[VEC_IND]] to <vscale x 4 x float>
 ; CHECK-NEXT:    [[TMP6:%.*]] = fsub <vscale x 4 x float> [[TMP5]], [[WIDE_MASKED_GATHER]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.nxv4f32.nxv4p0(<vscale x 4 x float> [[TMP6]], <vscale x 4 x ptr> align 4 [[WIDE_GEP]], <vscale x 4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP7]] = add nuw nsw <vscale x 4 x i64> [[INNER_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP8:%.*]] = icmp eq <vscale x 4 x i64> [[TMP7]], splat (i64 8)
-; CHECK-NEXT:    [[TMP9:%.*]] = extractelement <vscale x 4 x i1> [[TMP8]], i64 0
+; CHECK-NEXT:    [[TMP7]] = add nuw nsw i64 [[INNER_IV3]], 1
+; CHECK-NEXT:    [[TMP9:%.*]] = icmp eq i64 [[TMP7]], 8
 ; CHECK-NEXT:    br i1 [[TMP9]], label %[[OUTER_LATCH3]], label %[[INNER_BODY1]]
 ; CHECK:       [[OUTER_LATCH3]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], [[TMP1]]

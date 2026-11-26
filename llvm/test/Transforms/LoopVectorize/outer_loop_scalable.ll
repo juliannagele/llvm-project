@@ -29,14 +29,15 @@ define void @foo() {
 ; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <vscale x 4 x float>, ptr [[TMP6]], align 4
 ; CHECK-NEXT:    br label %[[INNER_LOOP1:.*]]
 ; CHECK:       [[INNER_LOOP1]]:
-; CHECK-NEXT:    [[VEC_PHI:%.*]] = phi <vscale x 4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP13:%.*]], %[[INNER_LOOP1]] ]
+; CHECK-NEXT:    [[J2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP7:%.*]], %[[INNER_LOOP1]] ]
 ; CHECK-NEXT:    [[VEC_PHI2:%.*]] = phi <vscale x 4 x float> [ [[WIDE_LOAD]], %[[VECTOR_BODY]] ], [ [[TMP12:%.*]], %[[INNER_LOOP1]] ]
-; CHECK-NEXT:    [[TMP11:%.*]] = getelementptr inbounds [4 x i8], ptr @B, <vscale x 4 x i64> [[VEC_PHI]]
-; CHECK-NEXT:    [[WIDE_MASKED_GATHER3:%.*]] = call <vscale x 4 x float> @llvm.masked.gather.nxv4f32.nxv4p0(<vscale x 4 x ptr> align 4 [[TMP11]], <vscale x 4 x i1> splat (i1 true), <vscale x 4 x float> poison)
-; CHECK-NEXT:    [[TMP12]] = fmul <vscale x 4 x float> [[VEC_PHI2]], [[WIDE_MASKED_GATHER3]]
-; CHECK-NEXT:    [[TMP13]] = add nuw nsw <vscale x 4 x i64> [[VEC_PHI]], splat (i64 1)
-; CHECK-NEXT:    [[TMP14:%.*]] = icmp eq <vscale x 4 x i64> [[TMP13]], splat (i64 512)
-; CHECK-NEXT:    [[TMP15:%.*]] = extractelement <vscale x 4 x i1> [[TMP14]], i64 0
+; CHECK-NEXT:    [[TMP3:%.*]] = getelementptr inbounds [512 x float], ptr @B, i64 0, i64 [[J2]]
+; CHECK-NEXT:    [[TMP4:%.*]] = load float, ptr [[TMP3]], align 4
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <vscale x 4 x float> poison, float [[TMP4]], i64 0
+; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <vscale x 4 x float> [[BROADCAST_SPLATINSERT]], <vscale x 4 x float> poison, <vscale x 4 x i32> zeroinitializer
+; CHECK-NEXT:    [[TMP12]] = fmul <vscale x 4 x float> [[VEC_PHI2]], [[BROADCAST_SPLAT]]
+; CHECK-NEXT:    [[TMP7]] = add nuw nsw i64 [[J2]], 1
+; CHECK-NEXT:    [[TMP15:%.*]] = icmp eq i64 [[TMP7]], 512
 ; CHECK-NEXT:    br i1 [[TMP15]], label %[[OUTER_LOOP_LATCH4]], label %[[INNER_LOOP1]]
 ; CHECK:       [[OUTER_LOOP_LATCH4]]:
 ; CHECK-NEXT:    store <vscale x 4 x float> [[TMP12]], ptr [[TMP6]], align 4

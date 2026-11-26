@@ -6347,8 +6347,10 @@ LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan, VFRange &Range,
   if (Plan->isOuterLoop()) {
     for (ElementCount VF : Range)
       Plan->addVF(VF);
+    DenseMap<const VPBasicBlock *, const Loop *> HeaderVPBBToLoop =
+        vputils::getNestedLoopHeaders(*Plan, *OrigLoop);
     if (!RUN_VPLAN_PASS(VPlanTransforms::tryToConvertVPInstructionsToVPRecipes,
-                        *Plan, *TLI, PSE, OrigLoop))
+                        *Plan, *TLI, PSE, OrigLoop, HeaderVPBBToLoop))
       return nullptr;
     RUN_VPLAN_PASS(VPlanTransforms::optimizeInductionLiveOutUsers, *Plan, PSE,
                    OrigLoop);

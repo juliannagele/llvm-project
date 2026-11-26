@@ -10,6 +10,7 @@
 #define LLVM_TRANSFORMS_VECTORIZE_VPLANUTILS_H
 
 #include "VPlan.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/BlockFrequency.h"
 #include "llvm/Support/BranchProbability.h"
 #include "llvm/Support/Compiler.h"
@@ -50,11 +51,38 @@ bool onlyScalarValuesOrLanesUsed(const VPValue *Def);
 VPValue *getOrCreateVPValueForSCEVExpr(VPlan &Plan, const SCEV *Expr,
                                        bool ExpandInIR = false);
 
-/// Return the SCEV expression for \p V. Returns SCEVCouldNotCompute if no
-/// SCEV expression could be constructed.
+/// Context for getSCEVExprForVPValue.
+struct SCEVExprContext {
+  /// The loop of the AddRecs for the inductions of the vector loop region.
+  const Loop *L = nullptr;
+  /// Optionally maps the header VPBasicBlocks of loop regions nested in the
+  /// vector loop region to their IR loops. With it, header phis of those
+  /// regions can be AddRecs in their loops.
+  const DenseMap<const VPBasicBlock *, const Loop *> *HeaderVPBBToLoop =
+      nullptr;
+};
+
+/// Return the SCEV expression for \p V in the context \p Ctx. Returns
+/// SCEVCouldNotCompute if no SCEV expression could be constructed.
 LLVM_ABI_FOR_TEST const SCEV *
 getSCEVExprForVPValue(const VPValue *V, PredicatedScalarEvolution &PSE,
-                      const Loop *L = nullptr);
+                      const SCEVExprContext &Ctx);
+
+/// Return the SCEV expression for \p V, with AddRecs of \p L for the
+/// inductions of the vector loop region. Returns SCEVCouldNotCompute if no SCEV
+/// expression could be constructed.
+inline const SCEV *getSCEVExprForVPValue(const VPValue *V,
+                                         PredicatedScalarEvolution &PSE,
+                                         const Loop *L = nullptr) {
+  return getSCEVExprForVPValue(V, PSE, SCEVExprContext{L});
+}
+
+/// Returns a map from the header VPBasicBlocks of the loop regions nested in
+/// the vector loop region of \p Plan to their IR loops in \p OuterLoop, the
+/// loop vectorized by \p Plan. Uses the IR phis underlying the header phis, so
+/// it must be called before they are converted to recipes.
+LLVM_ABI_FOR_TEST DenseMap<const VPBasicBlock *, const Loop *>
+getNestedLoopHeaders(const VPlan &Plan, const Loop &OuterLoop);
 
 /// If the pointer operand \p Addr of a memory access is an affine AddRec
 /// w.r.t. \p L with a constant stride, return the stride in units of
@@ -68,6 +96,9 @@ std::optional<int64_t> getConstantStride(VPValue *Addr, Type *AccessTy,
 /// affine AddRec (i.e. induction ), or an add expression of such operands or a
 /// sign-extended AddRec.
 bool isAddressSCEVForCost(const SCEV *Addr, ScalarEvolution &SE, const Loop *L);
+
+/// Returns true if \p V is defined in region \p R or in a region nested in it.
+bool isDefinedInRegion(const VPValue *V, const VPRegionBlock *R);
 
 /// Returns true if \p VPV is a single scalar, either because it produces the
 /// same value for all lanes or only has its first lane used.
@@ -147,6 +178,21 @@ std::optional<MemoryLocation> getMemoryLocation(const VPRecipeBase &R);
 /// ID.
 VPIRFlags getFlagsForInduction(const InductionDescriptor &ID,
                                const VPPhi *PhiR);
+
+/// If \p PhiR is a loop header phi of the form phi [Start, add(PhiR, Step)],
+/// returns Step, otherwise nullptr. Only matches the form: callers must check
+/// that Step is invariant in the loop.
+VPValue *getIntInductionStep(const VPPhi *PhiR);
+
+/// Returns the descriptor of \p PhiR if it is an integer induction
+/// phi [Start, add(PhiR, Step)] of its loop, with a non-zero step that is
+/// invariant in that loop. \p VectorLoop is the loop vectorized by the plan.
+/// For a header phi of a nested loop region, \p HeaderVPBBToLoop provides its
+/// loop (see SCEVExprContext).
+std::optional<InductionDescriptor> getIntInductionDescriptor(
+    const VPPhi *PhiR, PredicatedScalarEvolution &PSE, const Loop &VectorLoop,
+    const DenseMap<const VPBasicBlock *, const Loop *> *HeaderVPBBToLoop =
+        nullptr);
 
 /// Search \p Start's users for a recipe satisfying \p Pred, looking through
 /// recipes with definitions.

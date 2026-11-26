@@ -31,12 +31,11 @@ define void @inner_loop_reduction(ptr noalias nocapture readonly %a.in, ptr noal
 ; CHECK-NEXT:    [[WIDE_LOAD1:%.*]] = load <4 x double>, ptr [[TMP3]], align 8
 ; CHECK-NEXT:    br label %[[FOR2_HEADER2:.*]]
 ; CHECK:       [[FOR2_HEADER2]]:
-; CHECK-NEXT:    [[INDVAR23:%.*]] = phi <4 x i32> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP5:%.*]], %[[FOR2_HEADER2]] ]
+; CHECK-NEXT:    [[INDVAR23:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP5:%.*]], %[[FOR2_HEADER2]] ]
 ; CHECK-NEXT:    [[A_REDUCTION4:%.*]] = phi <4 x double> [ [[WIDE_LOAD]], %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[FOR2_HEADER2]] ]
 ; CHECK-NEXT:    [[TMP4]] = fadd <4 x double> [[WIDE_LOAD1]], [[A_REDUCTION4]]
-; CHECK-NEXT:    [[TMP5]] = add nuw nsw <4 x i32> [[INDVAR23]], splat (i32 1)
-; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq <4 x i32> [[TMP5]], splat (i32 10000)
-; CHECK-NEXT:    [[TMP7:%.*]] = extractelement <4 x i1> [[TMP6]], i64 0
+; CHECK-NEXT:    [[TMP5]] = add nuw nsw i32 [[INDVAR23]], 1
+; CHECK-NEXT:    [[TMP7:%.*]] = icmp eq i32 [[TMP5]], 10000
 ; CHECK-NEXT:    br i1 [[TMP7]], label %[[VECTOR_LATCH]], label %[[FOR2_HEADER2]]
 ; CHECK:       [[VECTOR_LATCH]]:
 ; CHECK-NEXT:    [[TMP9:%.*]] = getelementptr inbounds double, ptr [[C_OUT]], i64 [[INDEX]]

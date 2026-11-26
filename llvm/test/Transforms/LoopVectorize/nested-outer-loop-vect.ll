@@ -25,13 +25,12 @@ define void @nested_outer_loop_vect(i32 %n, i64 %outer_tc) {
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i32> [[TMP1]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[LOOP2_HEADER1:.*]]
 ; CHECK:       [[LOOP2_HEADER1]]:
-; CHECK-NEXT:    [[TMP3:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP5:%.*]], %[[LOOP2_HEADER1]] ]
-; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [32 x i8], ptr @arr, <4 x i64> [[TMP3]]
-; CHECK-NEXT:    [[TMP4:%.*]] = getelementptr inbounds [4 x i8], <4 x ptr> [[WIDE_GEP]], <4 x i64> [[VEC_IND]]
+; CHECK-NEXT:    [[LOOP2_IV2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[LOOP2_HEADER1]] ]
+; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [32 x i8], ptr @arr, i64 [[LOOP2_IV2]]
+; CHECK-NEXT:    [[TMP4:%.*]] = getelementptr inbounds [4 x i8], ptr [[WIDE_GEP]], <4 x i64> [[VEC_IND]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4i32.v4p0(<4 x i32> [[TMP2]], <4 x ptr> align 4 [[TMP4]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP5]] = add nuw nsw <4 x i64> [[TMP3]], splat (i64 1)
-; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq <4 x i64> [[TMP5]], splat (i64 8)
-; CHECK-NEXT:    [[TMP7:%.*]] = extractelement <4 x i1> [[TMP6]], i64 0
+; CHECK-NEXT:    [[TMP3]] = add nuw nsw i64 [[LOOP2_IV2]], 1
+; CHECK-NEXT:    [[TMP7:%.*]] = icmp eq i64 [[TMP3]], 8
 ; CHECK-NEXT:    br i1 [[TMP7]], label %[[VECTOR_LATCH]], label %[[LOOP2_HEADER1]]
 ; CHECK:       [[VECTOR_LATCH]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4

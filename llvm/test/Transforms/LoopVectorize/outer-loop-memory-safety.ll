@@ -21,15 +21,16 @@ define void @inner_reads_outer_store(ptr noalias %A, ptr noalias %B, i64 %N, i64
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[INNER_IV3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
 ; CHECK-NEXT:    [[SUM3:%.*]] = phi <4 x float> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT4:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV3]], i64 0
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT4]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x float> @llvm.masked.gather.v4f32.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x float> poison)
 ; CHECK-NEXT:    [[TMP3]] = fadd <4 x float> [[SUM3]], [[WIDE_MASKED_GATHER]]
-; CHECK-NEXT:    [[TMP4]] = add nuw nsw <4 x i64> [[INNER_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i64> [[TMP4]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add nuw nsw i64 [[INNER_IV3]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[TMP4]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH4]], label %[[INNER_BODY1]]
 ; CHECK:       [[OUTER_LATCH4]]:
 ; CHECK-NEXT:    [[TMP7:%.*]] = getelementptr inbounds float, ptr [[B]], i64 [[INDEX]]
@@ -92,15 +93,16 @@ define void @two_distinct_stores(ptr noalias %A, ptr noalias %B, ptr noalias %C,
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[INNER_IV3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
 ; CHECK-NEXT:    [[SUM3:%.*]] = phi <4 x float> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT4:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV3]], i64 0
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT4]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x float> @llvm.masked.gather.v4f32.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x float> poison)
 ; CHECK-NEXT:    [[TMP3]] = fadd <4 x float> [[SUM3]], [[WIDE_MASKED_GATHER]]
-; CHECK-NEXT:    [[TMP4]] = add nuw nsw <4 x i64> [[INNER_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i64> [[TMP4]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add nuw nsw i64 [[INNER_IV3]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[TMP4]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH4]], label %[[INNER_BODY1]]
 ; CHECK:       [[OUTER_LATCH4]]:
 ; CHECK-NEXT:    [[TMP7:%.*]] = getelementptr inbounds float, ptr [[B]], i64 [[INDEX]]
@@ -168,15 +170,16 @@ define void @store_strided(ptr noalias %A, ptr noalias %B, i64 %N, i64 %M) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[INNER_IV3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
 ; CHECK-NEXT:    [[SUM3:%.*]] = phi <4 x float> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT4:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV3]], i64 0
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT4]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x float> @llvm.masked.gather.v4f32.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x float> poison)
 ; CHECK-NEXT:    [[TMP3]] = fadd <4 x float> [[SUM3]], [[WIDE_MASKED_GATHER]]
-; CHECK-NEXT:    [[TMP4]] = add nuw nsw <4 x i64> [[INNER_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i64> [[TMP4]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add nuw nsw i64 [[INNER_IV3]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[TMP4]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH4]], label %[[INNER_BODY1]]
 ; CHECK:       [[OUTER_LATCH4]]:
 ; CHECK-NEXT:    [[TMP7:%.*]] = shl nsw <4 x i64> [[VEC_IND]], splat (i64 1)
@@ -477,14 +480,15 @@ define void @load_after_inner_loop_pos_store_index(ptr noalias %A, ptr noalias %
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP2:%.*]], %[[INNER_BODY1]] ]
-; CHECK-NEXT:    [[TMP0:%.*]] = mul <4 x i64> [[INNER_IV2]], splat (i64 9223372036854775807)
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP2:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[TMP4:%.*]] = mul i64 [[INNER_IV2]], 9223372036854775807
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[TMP4]], i64 0
+; CHECK-NEXT:    [[TMP0:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP1:%.*]] = add <4 x i64> <i64 0, i64 1, i64 2, i64 3>, [[TMP0]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds i8, ptr [[A]], <4 x i64> [[TMP1]]
-; CHECK-NEXT:    [[TMP2]] = add nuw nsw <4 x i64> [[INNER_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP3:%.*]] = icmp eq <4 x i64> [[TMP2]], splat (i64 3)
-; CHECK-NEXT:    [[TMP4:%.*]] = extractelement <4 x i1> [[TMP3]], i64 0
-; CHECK-NEXT:    br i1 [[TMP4]], label %[[OUTER_LATCH3:.*]], label %[[INNER_BODY1]], !llvm.loop [[LOOP10:![0-9]+]]
+; CHECK-NEXT:    [[TMP2]] = add nuw nsw i64 [[INNER_IV2]], 1
+; CHECK-NEXT:    [[TMP3:%.*]] = icmp eq i64 [[TMP2]], 3
+; CHECK-NEXT:    br i1 [[TMP3]], label %[[OUTER_LATCH3:.*]], label %[[INNER_BODY1]], !llvm.loop [[LOOP10:![0-9]+]]
 ; CHECK:       [[OUTER_LATCH3]]:
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x i8> @llvm.masked.gather.v4i8.v4p0(<4 x ptr> align 1 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x i8> poison)
 ; CHECK-NEXT:    store <4 x i8> [[WIDE_MASKED_GATHER]], ptr [[B]], align 1
@@ -1806,15 +1810,16 @@ define void @store_in_inner_loop_outer_addr(ptr noalias %A, ptr noalias %B, i64 
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[INNER_IV3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV3]], i64 0
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x float> @llvm.masked.gather.v4f32.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x float> poison)
 ; CHECK-NEXT:    [[TMP3:%.*]] = getelementptr inbounds float, ptr [[B]], i64 [[INDEX]]
 ; CHECK-NEXT:    store <4 x float> [[WIDE_MASKED_GATHER]], ptr [[TMP3]], align 4
-; CHECK-NEXT:    [[TMP4]] = add nuw nsw <4 x i64> [[INNER_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i64> [[TMP4]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add nuw nsw i64 [[INNER_IV3]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[TMP4]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH3]], label %[[INNER_BODY1]]
 ; CHECK:       [[OUTER_LATCH3]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4

@@ -20,16 +20,17 @@ define void @outer_with_i20_access(ptr %a, i64 %n, i64 %m) {
 ; CHECK-NEXT:    [[VEC_IND:%.*]] = phi <4 x i64> [ <i64 0, i64 1, i64 2, i64 3>, %[[VECTOR_PH]] ], [ [[VEC_IND_NEXT:%.*]], %[[OUTER_LATCH3]] ]
 ; CHECK-NEXT:    br label %[[INNER1:.*]]
 ; CHECK:       [[INNER1]]:
-; CHECK-NEXT:    [[J2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER1]] ]
+; CHECK-NEXT:    [[J3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[J3]], i64 0
+; CHECK-NEXT:    [[J2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP0:%.*]] = mul <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    [[TMP1:%.*]] = add <4 x i64> [[TMP0]], [[J2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr [4 x i8], ptr [[A]], <4 x i64> [[TMP1]]
 ; CHECK-NEXT:    [[WIDE_MASKED_GATHER:%.*]] = call <4 x i20> @llvm.masked.gather.v4i20.v4p0(<4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true), <4 x i20> poison)
 ; CHECK-NEXT:    [[TMP2:%.*]] = add <4 x i20> [[WIDE_MASKED_GATHER]], [[WIDE_MASKED_GATHER]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4i20.v4p0(<4 x i20> [[TMP2]], <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP3]] = add <4 x i64> [[J2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq <4 x i64> [[TMP3]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP5:%.*]] = extractelement <4 x i1> [[TMP4]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add i64 [[J3]], 1
+; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq i64 [[TMP4]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP5]], label %[[OUTER_LATCH3]], label %[[INNER1]]
 ; CHECK:       [[OUTER_LATCH3]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4

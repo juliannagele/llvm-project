@@ -35,8 +35,6 @@ define void @foo(i32 %iCount, i32 %c, i32 %jCount) {
 ; CHECK:       [[VECTOR_PH]]:
 ; CHECK-NEXT:    [[N_MOD_VF:%.*]] = and i64 [[WIDE_TRIP_COUNT27]], 3
 ; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[WIDE_TRIP_COUNT27]], [[N_MOD_VF]]
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[WIDE_TRIP_COUNT]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[BROADCAST_SPLATINSERT1:%.*]] = insertelement <4 x i32> poison, i32 [[C]], i64 0
 ; CHECK-NEXT:    [[BROADCAST_SPLAT2:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT1]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
@@ -51,15 +49,16 @@ define void @foo(i32 %iCount, i32 %c, i32 %jCount) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = trunc <4 x i64> [[VEC_IND]] to <4 x i32>
 ; CHECK-NEXT:    br label %[[FOR_BODY34:.*]]
 ; CHECK:       [[FOR_BODY34]]:
-; CHECK-NEXT:    [[TMP2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[FOR_BODY3_LR_PH3]] ], [ [[TMP7:%.*]], %[[FOR_BODY34]] ]
+; CHECK-NEXT:    [[IV_INNER3:%.*]] = phi i64 [ 0, %[[FOR_BODY3_LR_PH3]] ], [ [[TMP7:%.*]], %[[FOR_BODY34]] ]
 ; CHECK-NEXT:    [[TMP3:%.*]] = phi <4 x i32> [ [[WIDE_LOAD]], %[[FOR_BODY3_LR_PH3]] ], [ [[TMP6:%.*]], %[[FOR_BODY34]] ]
-; CHECK-NEXT:    [[TMP4:%.*]] = getelementptr inbounds [4 x i8], ptr @B, <4 x i64> [[TMP2]]
-; CHECK-NEXT:    [[WIDE_MASKED_GATHER5:%.*]] = call <4 x i32> @llvm.masked.gather.v4i32.v4p0(<4 x ptr> align 4 [[TMP4]], <4 x i1> splat (i1 true), <4 x i32> poison)
-; CHECK-NEXT:    [[TMP5:%.*]] = add nsw <4 x i32> [[WIDE_MASKED_GATHER5]], [[TMP1]]
+; CHECK-NEXT:    [[TMP8:%.*]] = getelementptr inbounds [1024 x i32], ptr @B, i64 0, i64 [[IV_INNER3]]
+; CHECK-NEXT:    [[TMP4:%.*]] = load i32, ptr [[TMP8]], align 4
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT5:%.*]] = insertelement <4 x i32> poison, i32 [[TMP4]], i64 0
+; CHECK-NEXT:    [[BROADCAST_SPLAT5:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT5]], <4 x i32> poison, <4 x i32> zeroinitializer
+; CHECK-NEXT:    [[TMP5:%.*]] = add nsw <4 x i32> [[BROADCAST_SPLAT5]], [[TMP1]]
 ; CHECK-NEXT:    [[TMP6]] = add nsw <4 x i32> [[TMP5]], [[TMP3]]
-; CHECK-NEXT:    [[TMP7]] = add nuw nsw <4 x i64> [[TMP2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP8:%.*]] = icmp eq <4 x i64> [[TMP7]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP9:%.*]] = extractelement <4 x i1> [[TMP8]], i64 0
+; CHECK-NEXT:    [[TMP7]] = add nuw nsw i64 [[IV_INNER3]], 1
+; CHECK-NEXT:    [[TMP9:%.*]] = icmp eq i64 [[TMP7]], [[WIDE_TRIP_COUNT]]
 ; CHECK-NEXT:    br i1 [[TMP9]], label %[[FOR_COND1_FOR_INC9_CRIT_EDGE6:.*]], label %[[FOR_BODY34]]
 ; CHECK:       [[FOR_COND1_FOR_INC9_CRIT_EDGE6]]:
 ; CHECK-NEXT:    store <4 x i32> [[TMP6]], ptr [[TMP14]], align 4

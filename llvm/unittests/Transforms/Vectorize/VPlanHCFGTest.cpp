@@ -8,6 +8,7 @@
 
 #include "../lib/Transforms/Vectorize/VPlan.h"
 #include "../lib/Transforms/Vectorize/VPlanTransforms.h"
+#include "../lib/Transforms/Vectorize/VPlanUtils.h"
 #include "VPlanTestBase.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/TargetParser/Triple.h"
@@ -208,7 +209,8 @@ TEST_F(VPlanHCFGTest, testVPInstructionToVPRecipesInner) {
       ->appendRecipe(new VPInstruction(
           VPInstruction::BranchOnCond,
           {Plan->getOrAddLiveIn(ConstantInt::getTrue(F->getContext()))}));
-  VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(*Plan, TLI, PSE, L);
+  VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
+      *Plan, TLI, PSE, L, vputils::getNestedLoopHeaders(*Plan, *L));
 
   VPBlockBase *Entry = Plan->getEntry()->getEntryBasicBlock();
   EXPECT_EQ(0u, Entry->getNumPredecessors());

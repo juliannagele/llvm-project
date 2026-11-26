@@ -20,12 +20,11 @@ define void @widen_call_instruction(ptr noalias nocapture readonly %a.in, ptr no
 ; CHECK-NEXT:    [[TMP2:%.*]] = call <4 x double> @llvm.sqrt.v4f64(<4 x double> [[WIDE_MASKED_GATHER1]])
 ; CHECK-NEXT:    br label %[[FOR2_HEADER2:.*]]
 ; CHECK:       [[FOR2_HEADER2]]:
-; CHECK-NEXT:    [[VEC_PHI:%.*]] = phi <4 x i32> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[FOR2_HEADER2]] ]
+; CHECK-NEXT:    [[INDVAR23:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[FOR2_HEADER2]] ]
 ; CHECK-NEXT:    [[VEC_PHI3:%.*]] = phi <4 x double> [ [[WIDE_LOAD]], %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[FOR2_HEADER2]] ]
 ; CHECK-NEXT:    [[TMP3]] = fadd <4 x double> [[TMP2]], [[VEC_PHI3]]
-; CHECK-NEXT:    [[TMP4]] = add nuw nsw <4 x i32> [[VEC_PHI]], splat (i32 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i32> [[TMP4]], splat (i32 10000)
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add nuw nsw i32 [[INDVAR23]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i32 [[TMP4]], 10000
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[VECTOR_LATCH]], label %[[FOR2_HEADER2]]
 ; CHECK:       [[VECTOR_LATCH]]:
 ; CHECK-NEXT:    [[TMP12:%.*]] = getelementptr inbounds double, ptr [[C_OUT]], i64 [[INDEX]]

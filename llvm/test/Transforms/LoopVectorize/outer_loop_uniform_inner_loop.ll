@@ -19,8 +19,6 @@ define void @inner_start_invariant(ptr %A, i64 %N, i64 %M, i64 %start) {
 ; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[N]], [[TMP0]]
 ; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[M]], i64 0
 ; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT1:%.*]] = insertelement <4 x i64> poison, i64 [[START]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT1]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[OUTER_LATCH5:.*]] ]
@@ -28,13 +26,14 @@ define void @inner_start_invariant(ptr %A, i64 %N, i64 %M, i64 %start) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY3:.*]]
 ; CHECK:       [[INNER_BODY3]]:
-; CHECK-NEXT:    [[INNER_IV4:%.*]] = phi <4 x i64> [ [[BROADCAST_SPLAT2]], %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i64 [ [[START]], %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV2]], i64 0
+; CHECK-NEXT:    [[INNER_IV4:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV4]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP3]] = add nsw <4 x i64> [[INNER_IV4]], splat (i64 1)
-; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq <4 x i64> [[TMP3]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP5:%.*]] = extractelement <4 x i1> [[TMP4]], i64 0
+; CHECK-NEXT:    [[TMP3]] = add nsw i64 [[INNER_IV2]], 1
+; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq i64 [[TMP3]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP5]], label %[[OUTER_LATCH5]], label %[[INNER_BODY3]]
 ; CHECK:       [[OUTER_LATCH5]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
@@ -93,13 +92,14 @@ define void @inner_step_2(ptr %A, i64 %N, i64 %M) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[INNER_IV3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV3]], i64 0
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP3]] = add nsw <4 x i64> [[INNER_IV2]], splat (i64 2)
-; CHECK-NEXT:    [[TMP4:%.*]] = icmp sge <4 x i64> [[TMP3]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP5:%.*]] = extractelement <4 x i1> [[TMP4]], i64 0
+; CHECK-NEXT:    [[TMP3]] = add nsw i64 [[INNER_IV3]], 2
+; CHECK-NEXT:    [[TMP5:%.*]] = icmp sge i64 [[TMP3]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP5]], label %[[OUTER_LATCH3]], label %[[INNER_BODY1]]
 ; CHECK:       [[OUTER_LATCH3]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
@@ -152,8 +152,6 @@ define void @inner_latch_cmp_on_trunc(ptr %A, i64 %N, i32 %bound, i64 %start) {
 ; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[N]], [[TMP0]]
 ; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i32> poison, i32 [[BOUND]], i64 0
 ; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT]], <4 x i32> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT1:%.*]] = insertelement <4 x i64> poison, i64 [[START]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT1]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[OUTER_LATCH5:.*]] ]
@@ -161,11 +159,15 @@ define void @inner_latch_cmp_on_trunc(ptr %A, i64 %N, i32 %bound, i64 %start) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = shl nsw <4 x i64> [[VEC_IND]], splat (i64 6)
 ; CHECK-NEXT:    br label %[[INNER_BODY3:.*]]
 ; CHECK:       [[INNER_BODY3]]:
-; CHECK-NEXT:    [[INNER_IV4:%.*]] = phi <4 x i64> [ [[BROADCAST_SPLAT2]], %[[VECTOR_BODY]] ], [ [[TMP3:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i64 [ [[START]], %[[VECTOR_BODY]] ], [ [[TMP8:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV2]], i64 0
+; CHECK-NEXT:    [[INNER_IV4:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV4]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP3]] = add nsw <4 x i64> [[INNER_IV4]], splat (i64 1)
+; CHECK-NEXT:    [[TMP8]] = add nsw i64 [[INNER_IV2]], 1
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT5:%.*]] = insertelement <4 x i64> poison, i64 [[TMP8]], i64 0
+; CHECK-NEXT:    [[TMP3:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT5]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP4:%.*]] = trunc <4 x i64> [[TMP3]] to <4 x i32>
 ; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i32> [[BROADCAST_SPLAT]], [[TMP4]]
 ; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
@@ -233,13 +235,15 @@ define void @inner_bound_defined_in_outer_loop(ptr %A, i64 %N, i64 %M) {
 ; CHECK-NEXT:    [[TMP2:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY1:.*]]
 ; CHECK:       [[INNER_BODY1]]:
-; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[INNER_IV3:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY1]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV3]], i64 0
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT3]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP3:%.*]] = add nsw <4 x i64> [[TMP2]], [[INNER_IV2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP3]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP4]] = add nuw nsw <4 x i64> [[INNER_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp eq <4 x i64> [[TMP4]], [[TMP1]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add nuw nsw i64 [[INNER_IV3]], 1
+; CHECK-NEXT:    [[TMP5:%.*]] = extractelement <4 x i64> [[TMP1]], i64 0
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp eq i64 [[TMP4]], [[TMP5]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH3]], label %[[INNER_BODY1]]
 ; CHECK:       [[OUTER_LATCH3]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
@@ -302,21 +306,21 @@ define void @nested_inner_bound_is_middle_iv(ptr %A, i64 %N, i64 %M) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[MIDDLE_HEADER1:.*]]
 ; CHECK:       [[MIDDLE_HEADER1]]:
-; CHECK-NEXT:    [[MIDDLE_IV2:%.*]] = phi <4 x i64> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP6:%.*]], %[[MIDDLE_LATCH5:.*]] ]
+; CHECK-NEXT:    [[MIDDLE_IV2:%.*]] = phi i64 [ 0, %[[VECTOR_BODY]] ], [ [[TMP6:%.*]], %[[MIDDLE_LATCH5:.*]] ]
 ; CHECK-NEXT:    br label %[[INNER_BODY3:.*]]
 ; CHECK:       [[INNER_BODY3]]:
-; CHECK-NEXT:    [[INNER_IV4:%.*]] = phi <4 x i64> [ zeroinitializer, %[[MIDDLE_HEADER1]] ], [ [[TMP3:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[INNER_IV5:%.*]] = phi i64 [ 0, %[[MIDDLE_HEADER1]] ], [ [[TMP3:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT5:%.*]] = insertelement <4 x i64> poison, i64 [[INNER_IV5]], i64 0
+; CHECK-NEXT:    [[INNER_IV4:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT5]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = add nsw <4 x i64> [[TMP1]], [[INNER_IV4]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP2]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP3]] = add nuw nsw <4 x i64> [[INNER_IV4]], splat (i64 1)
-; CHECK-NEXT:    [[TMP4:%.*]] = icmp ugt <4 x i64> [[TMP3]], [[MIDDLE_IV2]]
-; CHECK-NEXT:    [[TMP5:%.*]] = extractelement <4 x i1> [[TMP4]], i64 0
+; CHECK-NEXT:    [[TMP3]] = add nuw nsw i64 [[INNER_IV5]], 1
+; CHECK-NEXT:    [[TMP5:%.*]] = icmp ugt i64 [[TMP3]], [[MIDDLE_IV2]]
 ; CHECK-NEXT:    br i1 [[TMP5]], label %[[MIDDLE_LATCH5]], label %[[INNER_BODY3]]
 ; CHECK:       [[MIDDLE_LATCH5]]:
-; CHECK-NEXT:    [[TMP6]] = add nuw nsw <4 x i64> [[MIDDLE_IV2]], splat (i64 1)
-; CHECK-NEXT:    [[TMP7:%.*]] = icmp eq <4 x i64> [[TMP6]], [[BROADCAST_SPLAT]]
-; CHECK-NEXT:    [[TMP8:%.*]] = extractelement <4 x i1> [[TMP7]], i64 0
+; CHECK-NEXT:    [[TMP6]] = add nuw nsw i64 [[MIDDLE_IV2]], 1
+; CHECK-NEXT:    [[TMP8:%.*]] = icmp eq i64 [[TMP6]], [[M]]
 ; CHECK-NEXT:    br i1 [[TMP8]], label %[[OUTER_LATCH6]], label %[[MIDDLE_HEADER1]]
 ; CHECK:       [[OUTER_LATCH6]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
@@ -375,8 +379,6 @@ define void @inner_latch_continue_while_eq(ptr %A, i64 %N, i64 %M, i32 %X) {
 ; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[N]], [[TMP0]]
 ; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[M]], i64 0
 ; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT1:%.*]] = insertelement <4 x i32> poison, i32 [[X]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT2:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT1]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[OUTER_LATCH5:.*]] ]
@@ -384,14 +386,15 @@ define void @inner_latch_continue_while_eq(ptr %A, i64 %N, i64 %M, i32 %X) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY3:.*]]
 ; CHECK:       [[INNER_BODY3]]:
-; CHECK-NEXT:    [[INNER_IV4:%.*]] = phi <4 x i32> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i32> poison, i32 [[INNER_IV2]], i64 0
+; CHECK-NEXT:    [[INNER_IV4:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT3]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = zext <4 x i32> [[INNER_IV4]] to <4 x i64>
 ; CHECK-NEXT:    [[TMP3:%.*]] = add nsw <4 x i64> [[TMP1]], [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP3]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP4]] = add <4 x i32> [[INNER_IV4]], splat (i32 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp ne <4 x i32> [[TMP4]], [[BROADCAST_SPLAT2]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add i32 [[INNER_IV2]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp ne i32 [[TMP4]], [[X]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH5]], label %[[INNER_BODY3]]
 ; CHECK:       [[OUTER_LATCH5]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4
@@ -443,8 +446,6 @@ define void @inner_latch_continue_while_ule(ptr %A, i64 %N, i64 %M, i32 %X) {
 ; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[N]], [[TMP0]]
 ; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <4 x i64> poison, i64 [[M]], i64 0
 ; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
-; CHECK-NEXT:    [[BROADCAST_SPLATINSERT1:%.*]] = insertelement <4 x i32> poison, i32 [[X]], i64 0
-; CHECK-NEXT:    [[BROADCAST_SPLAT2:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT1]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
 ; CHECK:       [[VECTOR_BODY]]:
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[OUTER_LATCH5:.*]] ]
@@ -452,14 +453,15 @@ define void @inner_latch_continue_while_ule(ptr %A, i64 %N, i64 %M, i32 %X) {
 ; CHECK-NEXT:    [[TMP1:%.*]] = mul nsw <4 x i64> [[VEC_IND]], [[BROADCAST_SPLAT]]
 ; CHECK-NEXT:    br label %[[INNER_BODY3:.*]]
 ; CHECK:       [[INNER_BODY3]]:
-; CHECK-NEXT:    [[INNER_IV4:%.*]] = phi <4 x i32> [ zeroinitializer, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[INNER_IV2:%.*]] = phi i32 [ 0, %[[VECTOR_BODY]] ], [ [[TMP4:%.*]], %[[INNER_BODY3]] ]
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT3:%.*]] = insertelement <4 x i32> poison, i32 [[INNER_IV2]], i64 0
+; CHECK-NEXT:    [[INNER_IV4:%.*]] = shufflevector <4 x i32> [[BROADCAST_SPLATINSERT3]], <4 x i32> poison, <4 x i32> zeroinitializer
 ; CHECK-NEXT:    [[TMP2:%.*]] = zext <4 x i32> [[INNER_IV4]] to <4 x i64>
 ; CHECK-NEXT:    [[TMP3:%.*]] = add nsw <4 x i64> [[TMP1]], [[TMP2]]
 ; CHECK-NEXT:    [[WIDE_GEP:%.*]] = getelementptr inbounds [4 x i8], ptr [[A]], <4 x i64> [[TMP3]]
 ; CHECK-NEXT:    call void @llvm.masked.scatter.v4f32.v4p0(<4 x float> zeroinitializer, <4 x ptr> align 4 [[WIDE_GEP]], <4 x i1> splat (i1 true))
-; CHECK-NEXT:    [[TMP4]] = add <4 x i32> [[INNER_IV4]], splat (i32 1)
-; CHECK-NEXT:    [[TMP5:%.*]] = icmp ugt <4 x i32> [[TMP4]], [[BROADCAST_SPLAT2]]
-; CHECK-NEXT:    [[TMP6:%.*]] = extractelement <4 x i1> [[TMP5]], i64 0
+; CHECK-NEXT:    [[TMP4]] = add i32 [[INNER_IV2]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = icmp ugt i32 [[TMP4]], [[X]]
 ; CHECK-NEXT:    br i1 [[TMP6]], label %[[OUTER_LATCH5]], label %[[INNER_BODY3]]
 ; CHECK:       [[OUTER_LATCH5]]:
 ; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 4

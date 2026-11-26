@@ -106,6 +106,15 @@ VPValue *vputils::getOrCreateVPValueForSCEVExpr(VPlan &Plan, const SCEV *Expr,
   return Expanded;
 }
 
+/// Returns true if \p VPB is in region \p R or in a region nested in it. All
+/// blocks are in the top-level region, nullptr.
+static bool isInRegion(const VPBlockBase *VPB, const VPRegionBlock *R) {
+  for (const VPRegionBlock *P = VPB->getParent(); P != R; P = P->getParent())
+    if (!P)
+      return false;
+  return true;
+}
+
 /// Returns true if \p V being poison is guaranteed to trigger UB because it
 /// propagates to the address of a memory recipe.
 static bool poisonGuaranteesUB(const VPValue *V) {
@@ -172,6 +181,24 @@ GEPNoWrapFlags vputils::getGEPFlagsForPtr(VPValue *Ptr) {
   return GEPNoWrapFlags::none();
 }
 
+DenseMap<const VPBasicBlock *, const Loop *>
+vputils::getNestedLoopHeaders(const VPlan &Plan, const Loop &OuterLoop) {
+  DenseMap<const BasicBlock *, const Loop *> IRHeaderToLoop;
+  for (const Loop *L : OuterLoop.getLoopsInPreorder())
+    IRHeaderToLoop[L->getHeader()] = L;
+  DenseMap<const VPBasicBlock *, const Loop *> HeaderVPBBToLoop;
+  for (const VPRegionBlock *R : VPBlockUtils::blocksOnly<const VPRegionBlock>(
+           vp_depth_first_deep(Plan.getVectorLoopRegion()->getEntry()))) {
+    const VPBasicBlock *HeaderVPBB = R->getEntryBasicBlock();
+    if (HeaderVPBB->empty() || !HeaderVPBB->front().isPhi())
+      continue;
+    auto *Phi = cast<PHINode>(
+        HeaderVPBB->front().getVPSingleValue()->getUnderlyingValue());
+    HeaderVPBBToLoop[HeaderVPBB] = IRHeaderToLoop.lookup(Phi->getParent());
+  }
+  return HeaderVPBBToLoop;
+}
+
 /// Returns a SCEVUnknown for the IR load of \p R, an opaque value like a
 /// live-in, if \p R is a load that computes the same value in all its copies.
 /// Unrolling and replication create copies of a recipe that share its IR load,
@@ -199,9 +226,47 @@ static const SCEV *getSCEVForUniformLoad(const VPRecipeBase *R,
   return SE.getUnknown(LI);
 }
 
+bool vputils::isDefinedInRegion(const VPValue *V, const VPRegionBlock *R) {
+  assert(R && "expected a region");
+  if (auto *RV = dyn_cast<VPRegionValue>(V))
+    return RV->getDefiningRegion() == R ||
+           isInRegion(RV->getDefiningRegion(), R);
+  const VPRecipeBase *DefR = V->getDefiningRecipe();
+  return DefR && isInRegion(DefR->getParent(), R);
+}
+
+/// Returns the AddRec for a header phi [Start, add(PhiR, Step)] of a loop
+/// region nested in the vector loop region, if Step is defined outside the
+/// region and Start and Step are invariant in its loop. Otherwise returns
+/// SCEVCouldNotCompute.
+static const SCEV *
+getSCEVForNestedHeaderPhi(const VPPhi *PhiR, PredicatedScalarEvolution &PSE,
+                          const vputils::SCEVExprContext &Ctx) {
+  ScalarEvolution &SE = *PSE.getSE();
+  const Loop *PhiLoop = Ctx.HeaderVPBBToLoop
+                            ? Ctx.HeaderVPBBToLoop->lookup(PhiR->getParent())
+                            : nullptr;
+  if (!PhiLoop)
+    return SE.getCouldNotCompute();
+  VPValue *StepV = vputils::getIntInductionStep(PhiR);
+  // Only look at steps defined outside the phi's region; this also ensures
+  // that the recursion terminates.
+  if (!StepV ||
+      vputils::isDefinedInRegion(StepV, PhiR->getParent()->getParent()))
+    return SE.getCouldNotCompute();
+  const SCEV *Start =
+      vputils::getSCEVExprForVPValue(PhiR->getOperand(0), PSE, Ctx);
+  const SCEV *Step = vputils::getSCEVExprForVPValue(StepV, PSE, Ctx);
+  if (isa<SCEVCouldNotCompute>(Start) || isa<SCEVCouldNotCompute>(Step) ||
+      !SE.isLoopInvariant(Start, PhiLoop) || !SE.isLoopInvariant(Step, PhiLoop))
+    return SE.getCouldNotCompute();
+  return SE.getAddRecExpr(Start, Step, PhiLoop, SCEV::FlagNone);
+}
+
 const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
                                            PredicatedScalarEvolution &PSE,
-                                           const Loop *L) {
+                                           const SCEVExprContext &Ctx) {
+  const Loop *L = Ctx.L;
   ScalarEvolution &SE = *PSE.getSE();
   if (auto *RV = dyn_cast<VPRegionValue>(V)) {
     assert(RV == RV->getDefiningRegion()->getCanonicalIV() &&
@@ -225,7 +290,7 @@ const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
       -> const SCEV * {
     SmallVector<SCEVUse, 2> SCEVOps;
     for (VPValue *Op : Ops) {
-      const SCEV *S = getSCEVExprForVPValue(Op, PSE, L);
+      const SCEV *S = getSCEVExprForVPValue(Op, PSE, Ctx);
       if (isa<SCEVCouldNotCompute>(S))
         return SE.getCouldNotCompute();
       SCEVOps.push_back(S);
@@ -331,8 +396,8 @@ const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
     auto *SubR = dyn_cast<VPRecipeWithIRFlags>(LHSVal);
     if (match(LHSVal, m_Sub(m_VPValue(SubLHS), m_VPValue(SubRHS))) && SubR &&
         SubR->hasNoSignedWrap() && poisonGuaranteesUB(LHSVal)) {
-      const SCEV *V1 = getSCEVExprForVPValue(SubLHS, PSE, L);
-      const SCEV *V2 = getSCEVExprForVPValue(SubRHS, PSE, L);
+      const SCEV *V1 = getSCEVExprForVPValue(SubLHS, PSE, Ctx);
+      const SCEV *V2 = getSCEVExprForVPValue(SubRHS, PSE, Ctx);
       if (!isa<SCEVCouldNotCompute>(V1) && !isa<SCEVCouldNotCompute>(V2))
         return SE.getMinusSCEV(SE.getSignExtendExpr(V1, DestTy),
                                SE.getSignExtendExpr(V2, DestTy), SCEV::FlagNSW);
@@ -383,34 +448,40 @@ const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
   const SCEV *Expr =
       TypeSwitch<const VPRecipeBase *, const SCEV *>(DefR)
           .Case([](const VPExpandSCEVRecipe *R) { return R->getSCEV(); })
-          .Case([&SE, &PSE, L](const VPWidenIntOrFpInductionRecipe *R) {
-            const SCEV *Step = getSCEVExprForVPValue(R->getStepValue(), PSE, L);
+          .Case([&PSE, &Ctx](const VPPhi *R) {
+            return getSCEVForNestedHeaderPhi(R, PSE, Ctx);
+          })
+          .Case([&SE, &PSE, L, &Ctx](const VPWidenIntOrFpInductionRecipe *R) {
+            const SCEV *Step =
+                getSCEVExprForVPValue(R->getStepValue(), PSE, Ctx);
             if (!L || isa<SCEVCouldNotCompute>(Step))
               return SE.getCouldNotCompute();
             const SCEV *Start =
-                getSCEVExprForVPValue(R->getStartValue(), PSE, L);
+                getSCEVExprForVPValue(R->getStartValue(), PSE, Ctx);
             const SCEV *AddRec =
                 SE.getAddRecExpr(Start, Step, L, SCEV::FlagNone);
             if (R->isTruncated())
               return SE.getTruncateExpr(AddRec, R->getScalarType());
             return AddRec;
           })
-          .Case([&SE, &PSE,
-                 L](const VPWidenPointerInductionRecipe *R) -> const SCEV * {
+          .Case([&SE, &PSE, L,
+                 &Ctx](const VPWidenPointerInductionRecipe *R) -> const SCEV * {
             const SCEV *Start =
-                getSCEVExprForVPValue(R->getStartValue(), PSE, L);
+                getSCEVExprForVPValue(R->getStartValue(), PSE, Ctx);
             if (!L || isa<SCEVCouldNotCompute>(Start))
               return SE.getCouldNotCompute();
-            const SCEV *Step = getSCEVExprForVPValue(R->getStepValue(), PSE, L);
+            const SCEV *Step =
+                getSCEVExprForVPValue(R->getStepValue(), PSE, Ctx);
             if (isa<SCEVCouldNotCompute>(Step))
               return SE.getCouldNotCompute();
             return SE.getAddRecExpr(Start, Step, L, SCEV::FlagNone);
           })
-          .Case([&SE, &PSE, L](const VPDerivedIVRecipe *R) -> const SCEV * {
+          .Case([&SE, &PSE, &Ctx](const VPDerivedIVRecipe *R) -> const SCEV * {
             const SCEV *Start =
-                getSCEVExprForVPValue(R->getStartValue(), PSE, L);
-            const SCEV *Index = getSCEVExprForVPValue(R->getIndex(), PSE, L);
-            const SCEV *Step = getSCEVExprForVPValue(R->getStepValue(), PSE, L);
+                getSCEVExprForVPValue(R->getStartValue(), PSE, Ctx);
+            const SCEV *Index = getSCEVExprForVPValue(R->getIndex(), PSE, Ctx);
+            const SCEV *Step =
+                getSCEVExprForVPValue(R->getStepValue(), PSE, Ctx);
             if (any_of(ArrayRef({Start, Index, Step}),
                        IsaPred<SCEVCouldNotCompute>))
               return SE.getCouldNotCompute();
@@ -421,10 +492,10 @@ const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
           })
           .Case<VPReplicateRecipe, VPWidenLoadRecipe>(
               [&SE](const auto *R) { return getSCEVForUniformLoad(R, SE); })
-          .Case([&SE, &PSE, L](const VPScalarIVStepsRecipe *R) {
+          .Case([&SE, &PSE, &Ctx](const VPScalarIVStepsRecipe *R) {
             // A start index, set for parts and lanes other than the first,
             // adds StartIndex * Step, which is not modeled.
-            const SCEV *IV = getSCEVExprForVPValue(R->getOperand(0), PSE, L);
+            const SCEV *IV = getSCEVExprForVPValue(R->getOperand(0), PSE, Ctx);
             if (isa<SCEVCouldNotCompute>(IV) || R->getStartIndex())
               return SE.getCouldNotCompute();
             return IV;
@@ -815,6 +886,38 @@ VPBlockUtils::getPlainCFGHeaderAndLatch(const VPlan &Plan) {
 
 VPBasicBlock *VPBlockUtils::getPlainCFGMiddleBlock(const VPlan &Plan) {
   return cast<VPBasicBlock>(Plan.getScalarPreheader()->getPredecessors()[0]);
+}
+
+VPValue *vputils::getIntInductionStep(const VPPhi *PhiR) {
+  assert(PhiR->getNumOperands() == 2 && "expected a loop header phi");
+  VPValue *Step;
+  if (match(PhiR->getOperand(1), m_c_Add(m_Specific(PhiR), m_VPValue(Step))))
+    return Step;
+  return nullptr;
+}
+
+std::optional<InductionDescriptor> vputils::getIntInductionDescriptor(
+    const VPPhi *PhiR, PredicatedScalarEvolution &PSE, const Loop &VectorLoop,
+    const DenseMap<const VPBasicBlock *, const Loop *> *HeaderVPBBToLoop) {
+  const Loop *PhiLoop =
+      HeaderVPBBToLoop ? HeaderVPBBToLoop->lookup(PhiR->getParent()) : nullptr;
+  if (!PhiLoop)
+    PhiLoop = &VectorLoop;
+  VPValue *StepV = getIntInductionStep(PhiR);
+  if (!StepV)
+    return std::nullopt;
+  const SCEV *Step = PSE.getPredicatedSCEV(
+      getSCEVExprForVPValue(StepV, PSE, {&VectorLoop, HeaderVPBBToLoop}));
+  if (isa<SCEVCouldNotCompute>(Step) || Step->isZero() ||
+      !PSE.getSE()->isLoopInvariant(Step, PhiLoop))
+    return std::nullopt;
+  Value *Start = PhiR->getOperand(0)->getUnderlyingValue();
+  auto *Inc = dyn_cast_or_null<BinaryOperator>(
+      PhiR->getOperand(1)->getUnderlyingValue());
+  if (!Start || !Inc)
+    return std::nullopt;
+  return InductionDescriptor(Start, InductionDescriptor::IK_IntInduction, Step,
+                             Inc);
 }
 
 VPIRFlags vputils::getFlagsForInduction(const InductionDescriptor &ID,

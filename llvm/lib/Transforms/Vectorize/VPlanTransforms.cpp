@@ -88,9 +88,32 @@ static VPIRMetadata getMetadataOf(VPRecipeBase *R) {
   return {};
 }
 
+/// Returns true if \p PhiR is the header phi of an inner loop region and an
+/// integer induction of that loop whose start and step are the same for all
+/// lanes. All lanes execute the same iterations of an inner loop, so the
+/// induction is then the same for all lanes too. Must be called while
+/// converting VPInstructions to recipes in reverse post-order.
+static bool isUniformInnerLoopInduction(
+    VPPhi *PhiR, PredicatedScalarEvolution &PSE, const Loop &OuterLoop,
+    const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop) {
+  VPBasicBlock *HeaderVPBB = PhiR->getParent();
+  if (!HeaderVPBBToLoop.contains(HeaderVPBB))
+    return false;
+  // The step must be defined outside the inner loop: recipes in it have not
+  // been converted yet, and isSingleScalar is true for unconverted loads and
+  // phis by opcode.
+  VPValue *Step = vputils::getIntInductionStep(PhiR);
+  return Step && !vputils::isDefinedInRegion(Step, HeaderVPBB->getParent()) &&
+         vputils::isSingleScalar(PhiR->getOperand(0)) &&
+         vputils::isSingleScalar(Step) &&
+         vputils::getIntInductionDescriptor(PhiR, PSE, OuterLoop,
+                                            &HeaderVPBBToLoop);
+}
+
 bool VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
     VPlan &Plan, const TargetLibraryInfo &TLI, PredicatedScalarEvolution &PSE,
-    Loop *OuterLoop) {
+    Loop *OuterLoop,
+    const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop) {
 
   // Returns true if the access of \p AccessTy at \p Addr can be widened to a
   // consecutive vector access.
@@ -99,6 +122,8 @@ bool VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
            vputils::getConstantStride(Addr, AccessTy, PSE, OuterLoop) == 1;
   };
 
+  // Increments of the inner-loop inductions that are kept scalar.
+  SmallPtrSet<VPRecipeBase *, 4> ScalarIVIncrements;
   ReversePostOrderTraversal<VPBlockDeepTraversalWrapper<VPBlockBase *>> RPOT(
       Plan.getVectorLoopRegion());
   for (VPBasicBlock *VPBB : VPBlockUtils::blocksOnly<VPBasicBlock>(RPOT)) {
@@ -117,8 +142,24 @@ bool VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
 
       Instruction *Inst = cast<Instruction>(VPV->getUnderlyingValue());
 
+      auto *PhiR = dyn_cast<VPPhi>(&Ingredient);
+      if (PhiR && isUniformInnerLoopInduction(PhiR, PSE, *OuterLoop,
+                                              HeaderVPBBToLoop)) {
+        // Keep uniform inner-loop inductions scalar, together with their
+        // increment.
+        PhiR->setName(Inst->getName());
+        ScalarIVIncrements.insert(PhiR->getOperand(1)->getDefiningRecipe());
+        continue;
+      }
+
       VPRecipeBase *NewRecipe = nullptr;
-      if (auto *PhiR = dyn_cast<VPPhi>(&Ingredient)) {
+      if (ScalarIVIncrements.erase(&Ingredient)) {
+        auto *VPI = cast<VPInstruction>(&Ingredient);
+        NewRecipe = new VPReplicateRecipe(
+            Inst, {VPI->getOperand(0), VPI->getOperand(1)},
+            /*IsSingleScalar=*/true, /*Mask=*/nullptr, *VPI, *VPI,
+            VPI->getDebugLoc());
+      } else if (PhiR) {
         auto *Phi = cast<PHINode>(PhiR->getUnderlyingValue());
         NewRecipe = new VPWidenPHIRecipe(PhiR->operands(), PhiR->getDebugLoc(),
                                          Phi->getName());
@@ -1930,7 +1971,10 @@ static void narrowToSingleScalarRecipes(VPlan &Plan) {
         };
       };
 
-      if (any_of(RepOrWidenR->users(), IntroducesBCastOf(RepOrWidenR)) &&
+      // A scalar phi needs a scalar incoming value: an extract from a vector
+      // cannot be placed among the phis. Always narrow its incoming values.
+      if (none_of(RepOrWidenR->users(), IsaPred<VPPhi>) &&
+          any_of(RepOrWidenR->users(), IntroducesBCastOf(RepOrWidenR)) &&
           none_of(RepOrWidenR->operands(), [&](VPValue *Op) {
             if (any_of(
                     make_filter_range(Op->users(), not_equal_to(RepOrWidenR)),
@@ -1945,8 +1989,12 @@ static void narrowToSingleScalarRecipes(VPlan &Plan) {
             // after their users.
             bool IsSingleScalarLoad =
                 isa<VPWidenLoadRecipe>(Op) && vputils::isSingleScalar(Op);
+            // Single-scalar VPInstructions, e.g. scalar phis, need a broadcast
+            // too.
+            auto *OpVPI = dyn_cast<VPInstruction>(Op);
             return LiveInNeedsBroadcast || (OpR && OpR->isSingleScalar()) ||
-                   IsSingleScalarLoad;
+                   IsSingleScalarLoad ||
+                   (OpVPI && OpVPI->doesGenerateSingleScalar());
           }))
         continue;
 
