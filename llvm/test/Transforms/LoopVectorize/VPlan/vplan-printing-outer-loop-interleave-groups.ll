@@ -749,6 +749,439 @@ exit:
   ret void
 }
 
+; Groups whose index is computed in i32 and extended to i64.
+
+; The address uses an i32 outer IV through sext(mul nsw). The mul's poison
+; would reach the store addresses, so it does not overflow in the iterations
+; that execute the stores, and the extension can be pushed onto its operands.
+define void @store_group_i32_iv(ptr noalias %dst, i32 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i32_iv'
+; CHECK:      INTERLEAVE-GROUP with factor 3, ir<%d0>
+; CHECK:        store ir<%i> to index 0
+; CHECK:        store ir<%i> to index 1
+; CHECK:        store ir<%i> to index 2
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %i3 = mul nsw i32 %i, 3
+  %idx = sext i32 %i3 to i64
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %i, ptr %d0, align 4
+  store i32 %i, ptr %d1, align 4
+  store i32 %i, ptr %d2, align 4
+  %i.next = add nuw nsw i32 %i, 1
+  %outer.ec = icmp eq i32 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The index is sext(add nsw (mul nsw i, 3), 6). The extension is pushed onto
+; the operands of both operations.
+define void @store_group_i32_iv_nested_nsw_ops(ptr noalias %dst, i32 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i32_iv_nested_nsw_ops'
+; CHECK:      INTERLEAVE-GROUP with factor 3, ir<%d0>
+; CHECK:        store ir<%i> to index 0
+; CHECK:        store ir<%i> to index 1
+; CHECK:        store ir<%i> to index 2
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %i3 = mul nsw i32 %i, 3
+  %i3.6 = add nsw i32 %i3, 6
+  %idx = sext i32 %i3.6 to i64
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %i, ptr %d0, align 4
+  store i32 %i, ptr %d1, align 4
+  store i32 %i, ptr %d2, align 4
+  %i.next = add nuw nsw i32 %i, 1
+  %outer.ec = icmp eq i32 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; A load group of i8 in the inner loop, with an i32 outer IV and the index
+; zext nneg (mul nuw nsw (sub nsw col, base), 3). The inner loop executes in
+; every iteration, so the poison of the index operations would reach the load
+; addresses: the zext nneg is a sext, which is pushed onto the operands.
+define void @inner_load_group_i32_index(ptr noalias %dst, ptr noalias %src, i32 %start, i32 %end, i32 %base, i64 %pitch, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'inner_load_group_i32_index'
+; CHECK:        INTERLEAVE-GROUP with factor 3, ir<%p0>
+; CHECK:          ir<%v0> = load from index 0
+; CHECK:          ir<%v1> = load from index 1
+; CHECK:          ir<%v2> = load from index 2
+; CHECK:      WIDEN store ir<%dst.col>, ir<%a.next>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %col = phi i32 [ %start, %entry ], [ %col.next, %outer.latch ]
+  %sub = sub nsw i32 %col, %base
+  %mul = mul nuw nsw i32 %sub, 3
+  %idx = zext nneg i32 %mul to i64
+  %src.col = getelementptr inbounds i8, ptr %src, i64 %idx
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %a = phi i32 [ 0, %outer.header ], [ %a.next, %inner ]
+  %jp = mul nsw i64 %j, %pitch
+  %p0 = getelementptr inbounds i8, ptr %src.col, i64 %jp
+  %p1 = getelementptr inbounds i8, ptr %p0, i64 1
+  %p2 = getelementptr inbounds i8, ptr %p0, i64 2
+  %v0 = load i8, ptr %p0, align 1
+  %v1 = load i8, ptr %p1, align 1
+  %v2 = load i8, ptr %p2, align 1
+  %e0 = zext i8 %v0 to i32
+  %e1 = zext i8 %v1 to i32
+  %e2 = zext i8 %v2 to i32
+  %m1 = mul i32 %e1, 3
+  %m2 = mul i32 %e2, 7
+  %s0 = add i32 %a, %e0
+  %s1 = add i32 %s0, %m1
+  %a.next = add i32 %s1, %m2
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %dst.idx = sext i32 %sub to i64
+  %dst.col = getelementptr inbounds i32, ptr %dst, i64 %dst.idx
+  store i32 %a.next, ptr %dst.col, align 4
+  %col.next = add nsw i32 %col, 1
+  %outer.ec = icmp eq i32 %col.next, %end
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; Like @inner_load_group_i32_index, but the inner loop is only entered if %c
+; is true, so the loads do not execute in every iteration that computes the
+; index. The addresses of the group members only need to be correct in
+; iterations that execute the loads.
+define void @inner_load_group_i32_index_guarded(ptr noalias %dst, ptr noalias %src, i32 %start, i32 %end, i32 %base, i64 %pitch, i64 %M, i1 %c) {
+; CHECK-LABEL: VPlan for loop in 'inner_load_group_i32_index_guarded'
+; CHECK:        INTERLEAVE-GROUP with factor 3, ir<%p0>
+; CHECK:          ir<%v0> = load from index 0
+; CHECK:          ir<%v1> = load from index 1
+; CHECK:          ir<%v2> = load from index 2
+; CHECK:      WIDEN store ir<%dst.col>, vp<[[VP7:%[0-9]+]]>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %col = phi i32 [ %start, %entry ], [ %col.next, %outer.latch ]
+  %sub = sub nsw i32 %col, %base
+  %mul = mul nuw nsw i32 %sub, 3
+  %idx = zext nneg i32 %mul to i64
+  %src.col = getelementptr inbounds i8, ptr %src, i64 %idx
+  br i1 %c, label %inner, label %outer.latch
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %a = phi i32 [ 0, %outer.header ], [ %a.next, %inner ]
+  %jp = mul nsw i64 %j, %pitch
+  %p0 = getelementptr inbounds i8, ptr %src.col, i64 %jp
+  %p1 = getelementptr inbounds i8, ptr %p0, i64 1
+  %p2 = getelementptr inbounds i8, ptr %p0, i64 2
+  %v0 = load i8, ptr %p0, align 1
+  %v1 = load i8, ptr %p1, align 1
+  %v2 = load i8, ptr %p2, align 1
+  %e0 = zext i8 %v0 to i32
+  %e1 = zext i8 %v1 to i32
+  %e2 = zext i8 %v2 to i32
+  %m1 = mul i32 %e1, 3
+  %m2 = mul i32 %e2, 7
+  %s0 = add i32 %a, %e0
+  %s1 = add i32 %s0, %m1
+  %a.next = add i32 %s1, %m2
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %a.out = phi i32 [ 0, %outer.header ], [ %a.next, %inner ]
+  %dst.idx = sext i32 %sub to i64
+  %dst.col = getelementptr inbounds i32, ptr %dst, i64 %dst.idx
+  store i32 %a.out, ptr %dst.col, align 4
+  %col.next = add nsw i32 %col, 1
+  %outer.ec = icmp eq i32 %col.next, %end
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The index is computed before a branch on %c, which is the same for all lanes,
+; and the stores are only executed if %c is true. The addresses of the group
+; members only need to be correct in iterations that execute the stores.
+define void @store_group_i32_iv_index_before_branch(ptr noalias %dst, i32 %N, i64 %M, i1 %c) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i32_iv_index_before_branch'
+; CHECK:      INTERLEAVE-GROUP with factor 3, ir<%d0>
+; CHECK:        store ir<%i> to index 0
+; CHECK:        store ir<%i> to index 1
+; CHECK:        store ir<%i> to index 2
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %inner.exit, label %inner
+
+inner.exit:
+  %i3 = mul nsw i32 %i, 3
+  %idx = sext i32 %i3 to i64
+  br i1 %c, label %then, label %outer.latch
+
+then:
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %i, ptr %d0, align 4
+  store i32 %i, ptr %d1, align 4
+  store i32 %i, ptr %d2, align 4
+  br label %outer.latch
+
+outer.latch:
+  %i.next = add nuw nsw i32 %i, 1
+  %outer.ec = icmp eq i32 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; Like @store_group_i32_iv, but the increment of the IV has no nsw, so the IV
+; may wrap and sext(i) is not an AddRec.
+define void @store_group_i32_iv_without_nsw(ptr noalias %dst, i32 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i32_iv_without_nsw'
+; CHECK:      WIDEN store ir<%d0>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d1>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d2>, ir<%i>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %i3 = mul nsw i32 %i, 3
+  %idx = sext i32 %i3 to i64
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %i, ptr %d0, align 4
+  store i32 %i, ptr %d1, align 4
+  store i32 %i, ptr %d2, align 4
+  %i.next = add i32 %i, 1
+  %outer.ec = icmp eq i32 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The index is sext(sub (mul nsw i, 3), %b). The sub has no nsw and may wrap.
+define void @store_group_i32_sub_without_nsw(ptr noalias %dst, i32 %N, i64 %M, i32 %b) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i32_sub_without_nsw'
+; CHECK:      WIDEN store ir<%d0>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d1>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d2>, ir<%i>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %i3 = mul nsw i32 %i, 3
+  %i3.b = sub i32 %i3, %b
+  %idx = sext i32 %i3.b to i64
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %i, ptr %d0, align 4
+  store i32 %i, ptr %d1, align 4
+  store i32 %i, ptr %d2, align 4
+  %i.next = add nuw nsw i32 %i, 1
+  %outer.ec = icmp eq i32 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The index is sext(add nsw (mul i, 3), 6). The mul has no nsw and may wrap.
+define void @store_group_i32_nested_inner_op_without_nsw(ptr noalias %dst, i32 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i32_nested_inner_op_without_nsw'
+; CHECK:      WIDEN store ir<%d0>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d1>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d2>, ir<%i>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %i3 = mul i32 %i, 3
+  %i3.6 = add nsw i32 %i3, 6
+  %idx = sext i32 %i3.6 to i64
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %i, ptr %d0, align 4
+  store i32 %i, ptr %d1, align 4
+  store i32 %i, ptr %d2, align 4
+  %i.next = add nuw nsw i32 %i, 1
+  %outer.ec = icmp eq i32 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The index is zext(mul nuw nsw i, 3), without nneg.
+define void @store_group_i32_zext_without_nneg(ptr noalias %dst, i32 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i32_zext_without_nneg'
+; CHECK:      WIDEN store ir<%d0>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d1>, ir<%i>, align 4
+; CHECK:      WIDEN store ir<%d2>, ir<%i>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %i3 = mul nuw nsw i32 %i, 3
+  %idx = zext i32 %i3 to i64
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %i, ptr %d0, align 4
+  store i32 %i, ptr %d1, align 4
+  store i32 %i, ptr %d2, align 4
+  %i.next = add nuw nsw i32 %i, 1
+  %outer.ec = icmp eq i32 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The mul has no nsw, and the index 3 * i wraps in i8 for i > 42, so the
+; addresses of consecutive lanes are not a constant distance apart.
+define void @store_group_i8_index_wraps(ptr noalias %dst, i8 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_i8_index_wraps'
+; CHECK:      WIDEN store ir<%d0>, ir<%t>, align 4
+; CHECK:      WIDEN store ir<%d1>, ir<%t>, align 4
+; CHECK:      WIDEN store ir<%d2>, ir<%t>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i8 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %i3 = mul i8 %i, 3
+  %idx = sext i8 %i3 to i64
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %idx
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  %t = sext i8 %i to i32
+  store i32 %t, ptr %d0, align 4
+  store i32 %t, ptr %d1, align 4
+  store i32 %t, ptr %d2, align 4
+  %i.next = add nuw nsw i8 %i, 1
+  %outer.ec = icmp eq i8 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
 !0 = distinct !{!0, !1, !2}
 !1 = !{!"llvm.loop.vectorize.width", i32 4}
 !2 = !{!"llvm.loop.vectorize.enable"}

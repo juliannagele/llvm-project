@@ -60,6 +60,12 @@ struct SCEVExprContext {
   /// regions can be AddRecs in their loops.
   const DenseMap<const VPBasicBlock *, const Loop *> *HeaderVPBBToLoop =
       nullptr;
+  /// If set, the result may use no-wrap flags of operations whose poison
+  /// triggers UB only in iterations that execute UBContextVPBB, e.g. via the
+  /// address of a memory recipe in it. The result is then only valid for uses
+  /// executed in UBContextVPBB. It must not be compared with SCEVs of recipes
+  /// in other blocks.
+  const VPBasicBlock *UBContextVPBB = nullptr;
 };
 
 /// Return the SCEV expression for \p V in the context \p Ctx. Returns

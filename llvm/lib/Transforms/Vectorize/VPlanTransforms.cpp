@@ -3178,19 +3178,21 @@ struct GroupCandidate {
 };
 } // namespace
 
-/// Returns a candidate for the load or store \p I with address \p Addr, if its
-/// stride in \p OuterLoop is a constant > 1.
+/// Returns a candidate for the load or store \p I of recipe \p R with address
+/// \p Addr, if its stride in \p OuterLoop is a constant > 1.
 static std::optional<GroupCandidate> getGroupCandidate(
-    Instruction &I, VPValue *Addr, PredicatedScalarEvolution &PSE,
-    const Loop &OuterLoop,
+    VPRecipeBase &R, Instruction &I, VPValue *Addr,
+    PredicatedScalarEvolution &PSE, const Loop &OuterLoop,
     const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop) {
   ScalarEvolution &SE = *PSE.getSE();
   const DataLayout &DL = I.getDataLayout();
   Type *AccessTy = getLoadStoreType(&I);
   if (hasIrregularType(AccessTy, DL))
     return std::nullopt;
+  // The addresses are only used in iterations that execute the block of the
+  // group, as all members are in the same block.
   const SCEV *AddrSCEV = vputils::getSCEVExprForVPValue(
-      Addr, PSE, {&OuterLoop, &HeaderVPBBToLoop});
+      Addr, PSE, {&OuterLoop, &HeaderVPBBToLoop, R.getParent()});
   if (isa<SCEVCouldNotCompute>(AddrSCEV))
     return std::nullopt;
   const SCEV *LaneDist = vputils::getLaneDistance(AddrSCEV, OuterLoop, SE);
@@ -3336,7 +3338,7 @@ void VPlanTransforms::createOuterLoopInterleaveGroups(
         auto *MemR = dyn_cast<VPWidenMemoryRecipe>(&R);
         if (!MemR || MemR->isConsecutive() || MemR->isMasked())
           return std::nullopt;
-        return getGroupCandidate(MemR->getIngredient(), MemR->getAddr(), PSE,
+        return getGroupCandidate(R, MemR->getIngredient(), MemR->getAddr(), PSE,
                                  OuterLoop, HeaderVPBBToLoop);
       },
       [&](ArrayRef<GroupCandidate> Run) {

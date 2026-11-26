@@ -143,9 +143,12 @@ static bool executesWhenever(const VPRecipeBase *R, const VPRecipeBase *DefR,
 /// propagates to the address of a memory recipe that accesses memory for all
 /// active lanes whenever \p V is computed. A memory recipe masked by anything
 /// but the header mask may not access memory for lanes that compute poison.
+/// If \p UBContextVPBB is set, it is sufficient that the poison triggers UB in
+/// iterations that execute \p UBContextVPBB, as by a memory recipe in it.
 /// Memory accesses that are still VPInstructions, as in VPlan0, are not
 /// recognized, so this conservatively returns false there.
-static bool poisonGuaranteesUB(const VPValue *V) {
+static bool poisonGuaranteesUB(const VPValue *V,
+                               const VPBasicBlock *UBContextVPBB = nullptr) {
   const VPRecipeBase *DefR = V->getDefiningRecipe();
   if (!DefR || !DefR->getParent())
     return false;
@@ -161,14 +164,23 @@ static bool poisonGuaranteesUB(const VPValue *V) {
     if (Mask &&
         !match(Mask, m_CombineOr(m_HeaderMask(), m_Reverse(m_HeaderMask()))))
       return false;
+    if (MemR->getParent() == UBContextVPBB &&
+        isInRegion(UBContextVPBB, DefR->getParent()->getParent()))
+      return true;
     return executesWhenever(MemR, DefR, PDT);
   };
 
+  // A conservative subset of the operations propagatesPoison accepts for IR.
+  // Division and remainder are excluded, although they propagate poison from
+  // the dividend.
   auto PropagatesPoisonFromRecipeOp = [](const VPRecipeBase *R) {
     if (!isa<VPSingleDefRecipe>(R))
       return false;
     unsigned Opcode = vputils::getOpcode(R->getVPSingleValue());
-    return Instruction::isCast(Opcode) || Opcode == Instruction::GetElementPtr;
+    return Instruction::isCast(Opcode) ||
+           Opcode == Instruction::GetElementPtr ||
+           (Instruction::isBinaryOp(Opcode) &&
+            !Instruction::isIntDivRem(Opcode));
   };
 
   Worklist.push_back(V);
@@ -307,6 +319,59 @@ getSCEVForNestedHeaderPhi(const VPPhi *PhiR, PredicatedScalarEvolution &PSE,
   return SE.getAddRecExpr(Start, Step, PhiLoop, SCEV::FlagNone);
 }
 
+/// If \p V is an add, sub or mul with nsw whose poison guarantees UB, returns
+/// the SCEV for sign-extending it to \p DestTy with the extension pushed onto
+/// its operands. Otherwise returns nullptr. In iterations in which the poison
+/// would trigger UB, \p V does not overflow, so the result equals sext(V)
+/// there. For sub, this mirrors ScalarEvolution::createSCEV, which does it
+/// unconditionally. \p Depth is the number of enclosing operations being
+/// folded. At most MaxDepth levels of operations are folded, as each level
+/// walks the users of its operation in poisonGuaranteesUB. The limit is a
+/// compile-time bound, not a correctness requirement.
+static const SCEV *getSExtOfNSWBinOp(const VPValue *V, Type *DestTy,
+                                     PredicatedScalarEvolution &PSE,
+                                     const vputils::SCEVExprContext &Ctx,
+                                     unsigned Depth = 0) {
+  constexpr unsigned MaxDepth = 4;
+  ScalarEvolution &SE = *PSE.getSE();
+  VPValue *LHS, *RHS;
+  auto *R = dyn_cast_or_null<VPRecipeWithIRFlags>(V->getDefiningRecipe());
+  if (Depth >= MaxDepth || !R ||
+      !match(V,
+             m_CombineOr(m_Add(m_VPValue(LHS), m_VPValue(RHS)),
+                         m_CombineOr(m_Sub(m_VPValue(LHS), m_VPValue(RHS)),
+                                     m_Mul(m_VPValue(LHS), m_VPValue(RHS))))) ||
+      !R->getNoWrapFlagsOrNone().HasNSW ||
+      !poisonGuaranteesUB(V, Ctx.UBContextVPBB))
+    return nullptr;
+
+  // Returns the extended operand \p Op, folding nested operations. Sets
+  // \p IsSExt if the result is sext(Op).
+  auto GetExtendedOperand = [&](VPValue *Op, bool &IsSExt) -> const SCEV * {
+    if (const SCEV *S = getSExtOfNSWBinOp(Op, DestTy, PSE, Ctx, Depth + 1)) {
+      IsSExt = false;
+      return S;
+    }
+    IsSExt = true;
+    const SCEV *S = vputils::getSCEVExprForVPValue(Op, PSE, Ctx);
+    return isa<SCEVCouldNotCompute>(S) ? S : SE.getSignExtendExpr(S, DestTy);
+  };
+  bool LHSIsSExt, RHSIsSExt;
+  const SCEV *LHSExt = GetExtendedOperand(LHS, LHSIsSExt);
+  const SCEV *RHSExt = GetExtendedOperand(RHS, RHSIsSExt);
+  if (isa<SCEVCouldNotCompute>(LHSExt) || isa<SCEVCouldNotCompute>(RHSExt))
+    return nullptr;
+  unsigned Opcode = vputils::getOpcode(V);
+  if (Opcode == Instruction::Mul)
+    return SE.getMulExpr(LHSExt, RHSExt);
+  // The sum or difference of two values sign-extended from a narrower type
+  // does not overflow.
+  SCEVFlags Flags = LHSIsSExt && RHSIsSExt ? SCEV::FlagNSW : SCEV::FlagNone;
+  if (Opcode == Instruction::Add)
+    return SE.getAddExpr(LHSExt, RHSExt, Flags);
+  return SE.getMinusSCEV(LHSExt, RHSExt, Flags);
+}
+
 const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
                                            PredicatedScalarEvolution &PSE,
                                            const SCEVExprContext &Ctx) {
@@ -425,6 +490,16 @@ const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
       return SE.getTruncateExpr(Ops[0], DestTy);
     });
   }
+  // A zext nneg is a sext in iterations in which its poison would trigger UB.
+  if (match(V, m_NNegZExt(m_VPValue(LHSVal))) &&
+      poisonGuaranteesUB(V, Ctx.UBContextVPBB)) {
+    Type *DestTy = V->getScalarType();
+    if (const SCEV *S = getSExtOfNSWBinOp(LHSVal, DestTy, PSE, Ctx))
+      return S;
+    return CreateSCEV({LHSVal}, [&](ArrayRef<SCEVUse> Ops) {
+      return SE.getSignExtendExpr(Ops[0], DestTy);
+    });
+  }
   if (match(V, m_ZExt(m_VPValue(LHSVal)))) {
     Type *DestTy = V->getScalarType();
     return CreateSCEV({LHSVal}, [&](ArrayRef<SCEVUse> Ops) {
@@ -433,20 +508,8 @@ const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
   }
   if (match(V, m_SExt(m_VPValue(LHSVal)))) {
     Type *DestTy = V->getScalarType();
-
-    // Mirror SCEV's createSCEV handling for sext(sub nsw): push sign extension
-    // onto the operands before computing the subtraction.
-    VPValue *SubLHS, *SubRHS;
-    auto *SubR = dyn_cast<VPRecipeWithIRFlags>(LHSVal);
-    if (match(LHSVal, m_Sub(m_VPValue(SubLHS), m_VPValue(SubRHS))) && SubR &&
-        SubR->hasNoSignedWrap() && poisonGuaranteesUB(LHSVal)) {
-      const SCEV *V1 = getSCEVExprForVPValue(SubLHS, PSE, Ctx);
-      const SCEV *V2 = getSCEVExprForVPValue(SubRHS, PSE, Ctx);
-      if (!isa<SCEVCouldNotCompute>(V1) && !isa<SCEVCouldNotCompute>(V2))
-        return SE.getMinusSCEV(SE.getSignExtendExpr(V1, DestTy),
-                               SE.getSignExtendExpr(V2, DestTy), SCEV::FlagNSW);
-    }
-
+    if (const SCEV *S = getSExtOfNSWBinOp(LHSVal, DestTy, PSE, Ctx))
+      return S;
     return CreateSCEV({LHSVal}, [&](ArrayRef<SCEVUse> Ops) {
       return SE.getSignExtendExpr(Ops[0], DestTy);
     });

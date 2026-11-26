@@ -1024,6 +1024,11 @@ public:
     return DisjointFlags.IsDisjoint;
   }
 
+  /// Returns true if the recipe has the nneg flag set.
+  bool hasNonNeg() const {
+    return OpType == OperationType::NonNegOp && NonNegFlags.NonNeg;
+  }
+
   RecurKind getRecurKind() const {
     assert(OpType == OperationType::ReductionOp &&
            "recipe doesn't have reduction flags");

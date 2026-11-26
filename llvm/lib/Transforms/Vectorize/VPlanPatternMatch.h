@@ -549,6 +549,23 @@ inline AllRecipe_match<Instruction::SExt, Op0_t> m_SExt(const Op0_t &Op0) {
   return m_Unary<Instruction::SExt, Op0_t>(Op0);
 }
 
+/// Match a recipe with the nneg flag set.
+struct nneg_match {
+  bool match(const VPValue *V) const {
+    const VPRecipeBase *R = V->getDefiningRecipe();
+    return R && match(R);
+  }
+  bool match(const VPRecipeBase *R) const {
+    const auto *IRFlags = dyn_cast<VPRecipeWithIRFlags>(R);
+    return IRFlags && IRFlags->hasNonNeg();
+  }
+};
+
+/// Match a zext with the nneg flag set, like PatternMatch's m_NNegZExt.
+template <typename Op0_t> inline auto m_NNegZExt(const Op0_t &Op0) {
+  return m_CombineAnd(m_ZExt(Op0), nneg_match());
+}
+
 template <typename Op0_t>
 inline AllRecipe_match<Instruction::FPExt, Op0_t> m_FPExt(const Op0_t &Op0) {
   return m_Unary<Instruction::FPExt, Op0_t>(Op0);
