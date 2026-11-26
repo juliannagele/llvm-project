@@ -1211,3 +1211,275 @@ loop.latch:
 exit:
   ret void
 }
+
+; The addresses p[sext(%k) + 1] in %then and p[sext(sub nsw %k, -1)] in %else
+; are only equal if the sub does not overflow. It may overflow in iterations
+; that only execute %then, so the loads must not be hoisted to a single load
+; using the address from %else.
+define void @sext_sub_nsw_address_in_one_branch(ptr noalias %dst, ptr noalias %cond, ptr noalias %p, i8 %k) {
+; CHECK-LABEL: define void @sext_sub_nsw_address_in_one_branch(
+; CHECK-SAME: ptr noalias [[DST:%.*]], ptr noalias [[COND:%.*]], ptr noalias [[P:%.*]], i8 [[K:%.*]]) {
+; CHECK-NEXT:  [[ENTRY:.*:]]
+; CHECK-NEXT:    br label %[[VECTOR_PH:.*]]
+; CHECK:       [[VECTOR_PH]]:
+; CHECK-NEXT:    [[TMP0:%.*]] = sub nsw i8 [[K]], -1
+; CHECK-NEXT:    [[TMP1:%.*]] = sext i8 [[TMP0]] to i64
+; CHECK-NEXT:    [[TMP2:%.*]] = getelementptr inbounds i8, ptr [[P]], i64 [[TMP1]]
+; CHECK-NEXT:    [[TMP3:%.*]] = sext i8 [[K]] to i64
+; CHECK-NEXT:    [[TMP4:%.*]] = add nsw i64 [[TMP3]], 1
+; CHECK-NEXT:    [[TMP5:%.*]] = getelementptr inbounds i8, ptr [[P]], i64 [[TMP4]]
+; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
+; CHECK:       [[VECTOR_BODY]]:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[PRED_LOAD_CONTINUE6:.*]] ]
+; CHECK-NEXT:    [[TMP6:%.*]] = getelementptr inbounds i32, ptr [[COND]], i32 [[INDEX]]
+; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <2 x i32>, ptr [[TMP6]], align 4
+; CHECK-NEXT:    [[TMP7:%.*]] = icmp ule <2 x i32> [[WIDE_LOAD]], splat (i32 11)
+; CHECK-NEXT:    [[TMP8:%.*]] = xor <2 x i1> [[TMP7]], splat (i1 true)
+; CHECK-NEXT:    [[TMP9:%.*]] = extractelement <2 x i1> [[TMP8]], i64 0
+; CHECK-NEXT:    br i1 [[TMP9]], label %[[PRED_LOAD_IF:.*]], label %[[PRED_LOAD_CONTINUE:.*]]
+; CHECK:       [[PRED_LOAD_IF]]:
+; CHECK-NEXT:    [[TMP10:%.*]] = load i8, ptr [[TMP2]], align 1
+; CHECK-NEXT:    [[TMP11:%.*]] = insertelement <2 x i8> poison, i8 [[TMP10]], i64 0
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE]]
+; CHECK:       [[PRED_LOAD_CONTINUE]]:
+; CHECK-NEXT:    [[TMP12:%.*]] = phi <2 x i8> [ poison, %[[VECTOR_BODY]] ], [ [[TMP11]], %[[PRED_LOAD_IF]] ]
+; CHECK-NEXT:    [[TMP13:%.*]] = extractelement <2 x i1> [[TMP8]], i64 1
+; CHECK-NEXT:    br i1 [[TMP13]], label %[[PRED_LOAD_IF1:.*]], label %[[PRED_LOAD_CONTINUE2:.*]]
+; CHECK:       [[PRED_LOAD_IF1]]:
+; CHECK-NEXT:    [[TMP14:%.*]] = load i8, ptr [[TMP2]], align 1
+; CHECK-NEXT:    [[TMP15:%.*]] = insertelement <2 x i8> [[TMP12]], i8 [[TMP14]], i64 1
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE2]]
+; CHECK:       [[PRED_LOAD_CONTINUE2]]:
+; CHECK-NEXT:    [[TMP16:%.*]] = phi <2 x i8> [ [[TMP12]], %[[PRED_LOAD_CONTINUE]] ], [ [[TMP15]], %[[PRED_LOAD_IF1]] ]
+; CHECK-NEXT:    [[TMP17:%.*]] = extractelement <2 x i1> [[TMP7]], i64 0
+; CHECK-NEXT:    br i1 [[TMP17]], label %[[PRED_LOAD_IF3:.*]], label %[[PRED_LOAD_CONTINUE4:.*]]
+; CHECK:       [[PRED_LOAD_IF3]]:
+; CHECK-NEXT:    [[TMP18:%.*]] = load i8, ptr [[TMP5]], align 1
+; CHECK-NEXT:    [[TMP19:%.*]] = insertelement <2 x i8> poison, i8 [[TMP18]], i64 0
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE4]]
+; CHECK:       [[PRED_LOAD_CONTINUE4]]:
+; CHECK-NEXT:    [[TMP20:%.*]] = phi <2 x i8> [ poison, %[[PRED_LOAD_CONTINUE2]] ], [ [[TMP19]], %[[PRED_LOAD_IF3]] ]
+; CHECK-NEXT:    [[TMP21:%.*]] = extractelement <2 x i1> [[TMP7]], i64 1
+; CHECK-NEXT:    br i1 [[TMP21]], label %[[PRED_LOAD_IF5:.*]], label %[[PRED_LOAD_CONTINUE6]]
+; CHECK:       [[PRED_LOAD_IF5]]:
+; CHECK-NEXT:    [[TMP22:%.*]] = load i8, ptr [[TMP5]], align 1
+; CHECK-NEXT:    [[TMP23:%.*]] = insertelement <2 x i8> [[TMP20]], i8 [[TMP22]], i64 1
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE6]]
+; CHECK:       [[PRED_LOAD_CONTINUE6]]:
+; CHECK-NEXT:    [[TMP24:%.*]] = phi <2 x i8> [ [[TMP20]], %[[PRED_LOAD_CONTINUE4]] ], [ [[TMP23]], %[[PRED_LOAD_IF5]] ]
+; CHECK-NEXT:    [[PREDPHI:%.*]] = select <2 x i1> [[TMP7]], <2 x i8> [[TMP24]], <2 x i8> [[TMP16]]
+; CHECK-NEXT:    [[TMP25:%.*]] = getelementptr inbounds i8, ptr [[DST]], i32 [[INDEX]]
+; CHECK-NEXT:    store <2 x i8> [[PREDPHI]], ptr [[TMP25]], align 1
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 2
+; CHECK-NEXT:    [[TMP26:%.*]] = icmp eq i32 [[INDEX_NEXT]], 100
+; CHECK-NEXT:    br i1 [[TMP26]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP90:![0-9]+]]
+; CHECK:       [[MIDDLE_BLOCK]]:
+; CHECK-NEXT:    br label %[[EXIT:.*]]
+; CHECK:       [[EXIT]]:
+; CHECK-NEXT:    ret void
+;
+entry:
+  br label %loop
+
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %iv.next, %loop.latch ]
+  %gep.cond = getelementptr inbounds i32, ptr %cond, i32 %iv
+  %l.c = load i32, ptr %gep.cond
+  %c = icmp ule i32 %l.c, 11
+  br i1 %c, label %then, label %else
+
+then:
+  %k.ext = sext i8 %k to i64
+  %idx.then = add nsw i64 %k.ext, 1
+  %gep.then = getelementptr inbounds i8, ptr %p, i64 %idx.then
+  %l.then = load i8, ptr %gep.then, align 1
+  br label %loop.latch
+
+else:
+  %k.sub = sub nsw i8 %k, -1
+  %idx.else = sext i8 %k.sub to i64
+  %gep.else = getelementptr inbounds i8, ptr %p, i64 %idx.else
+  %l.else = load i8, ptr %gep.else, align 1
+  br label %loop.latch
+
+loop.latch:
+  %merge = phi i8 [ %l.then, %then ], [ %l.else, %else ]
+  %gep.dst = getelementptr inbounds i8, ptr %dst, i32 %iv
+  store i8 %merge, ptr %gep.dst, align 1
+  %iv.next = add nuw nsw i32 %iv, 1
+  %ec = icmp eq i32 %iv.next, 100
+  br i1 %ec, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+; Like @sext_sub_nsw_address_in_one_branch, but the sign-extended sub is also
+; stored in every iteration. A stored value is no address, so its poison does
+; not trigger UB.
+define void @sext_sub_nsw_address_in_one_branch_value_stored(ptr noalias %dst, ptr noalias %dst.idx, ptr noalias %cond, ptr noalias %p, i8 %k) {
+; CHECK-LABEL: define void @sext_sub_nsw_address_in_one_branch_value_stored(
+; CHECK-SAME: ptr noalias [[DST:%.*]], ptr noalias [[DST_IDX:%.*]], ptr noalias [[COND:%.*]], ptr noalias [[P:%.*]], i8 [[K:%.*]]) {
+; CHECK-NEXT:  [[ENTRY:.*:]]
+; CHECK-NEXT:    br label %[[VECTOR_PH:.*]]
+; CHECK:       [[VECTOR_PH]]:
+; CHECK-NEXT:    [[TMP0:%.*]] = sub nsw i8 [[K]], -1
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <2 x i8> poison, i8 [[TMP0]], i64 0
+; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <2 x i8> [[BROADCAST_SPLATINSERT]], <2 x i8> poison, <2 x i32> zeroinitializer
+; CHECK-NEXT:    [[TMP1:%.*]] = sext <2 x i8> [[BROADCAST_SPLAT]] to <2 x i64>
+; CHECK-NEXT:    [[TMP2:%.*]] = extractelement <2 x i64> [[TMP1]], i64 0
+; CHECK-NEXT:    [[TMP3:%.*]] = getelementptr inbounds i8, ptr [[P]], i64 [[TMP2]]
+; CHECK-NEXT:    [[TMP4:%.*]] = sext i8 [[K]] to i64
+; CHECK-NEXT:    [[TMP5:%.*]] = add nsw i64 [[TMP4]], 1
+; CHECK-NEXT:    [[TMP6:%.*]] = getelementptr inbounds i8, ptr [[P]], i64 [[TMP5]]
+; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
+; CHECK:       [[VECTOR_BODY]]:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[PRED_LOAD_CONTINUE6:.*]] ]
+; CHECK-NEXT:    [[TMP7:%.*]] = getelementptr inbounds i32, ptr [[COND]], i32 [[INDEX]]
+; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <2 x i32>, ptr [[TMP7]], align 4
+; CHECK-NEXT:    [[TMP8:%.*]] = icmp ule <2 x i32> [[WIDE_LOAD]], splat (i32 11)
+; CHECK-NEXT:    [[TMP9:%.*]] = xor <2 x i1> [[TMP8]], splat (i1 true)
+; CHECK-NEXT:    [[TMP10:%.*]] = extractelement <2 x i1> [[TMP9]], i64 0
+; CHECK-NEXT:    br i1 [[TMP10]], label %[[PRED_LOAD_IF:.*]], label %[[PRED_LOAD_CONTINUE:.*]]
+; CHECK:       [[PRED_LOAD_IF]]:
+; CHECK-NEXT:    [[TMP11:%.*]] = load i8, ptr [[TMP3]], align 1
+; CHECK-NEXT:    [[TMP12:%.*]] = insertelement <2 x i8> poison, i8 [[TMP11]], i64 0
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE]]
+; CHECK:       [[PRED_LOAD_CONTINUE]]:
+; CHECK-NEXT:    [[TMP13:%.*]] = phi <2 x i8> [ poison, %[[VECTOR_BODY]] ], [ [[TMP12]], %[[PRED_LOAD_IF]] ]
+; CHECK-NEXT:    [[TMP14:%.*]] = extractelement <2 x i1> [[TMP9]], i64 1
+; CHECK-NEXT:    br i1 [[TMP14]], label %[[PRED_LOAD_IF1:.*]], label %[[PRED_LOAD_CONTINUE2:.*]]
+; CHECK:       [[PRED_LOAD_IF1]]:
+; CHECK-NEXT:    [[TMP15:%.*]] = load i8, ptr [[TMP3]], align 1
+; CHECK-NEXT:    [[TMP16:%.*]] = insertelement <2 x i8> [[TMP13]], i8 [[TMP15]], i64 1
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE2]]
+; CHECK:       [[PRED_LOAD_CONTINUE2]]:
+; CHECK-NEXT:    [[TMP17:%.*]] = phi <2 x i8> [ [[TMP13]], %[[PRED_LOAD_CONTINUE]] ], [ [[TMP16]], %[[PRED_LOAD_IF1]] ]
+; CHECK-NEXT:    [[TMP18:%.*]] = extractelement <2 x i1> [[TMP8]], i64 0
+; CHECK-NEXT:    br i1 [[TMP18]], label %[[PRED_LOAD_IF3:.*]], label %[[PRED_LOAD_CONTINUE4:.*]]
+; CHECK:       [[PRED_LOAD_IF3]]:
+; CHECK-NEXT:    [[TMP19:%.*]] = load i8, ptr [[TMP6]], align 1
+; CHECK-NEXT:    [[TMP20:%.*]] = insertelement <2 x i8> poison, i8 [[TMP19]], i64 0
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE4]]
+; CHECK:       [[PRED_LOAD_CONTINUE4]]:
+; CHECK-NEXT:    [[TMP21:%.*]] = phi <2 x i8> [ poison, %[[PRED_LOAD_CONTINUE2]] ], [ [[TMP20]], %[[PRED_LOAD_IF3]] ]
+; CHECK-NEXT:    [[TMP22:%.*]] = extractelement <2 x i1> [[TMP8]], i64 1
+; CHECK-NEXT:    br i1 [[TMP22]], label %[[PRED_LOAD_IF5:.*]], label %[[PRED_LOAD_CONTINUE6]]
+; CHECK:       [[PRED_LOAD_IF5]]:
+; CHECK-NEXT:    [[TMP23:%.*]] = load i8, ptr [[TMP6]], align 1
+; CHECK-NEXT:    [[TMP24:%.*]] = insertelement <2 x i8> [[TMP21]], i8 [[TMP23]], i64 1
+; CHECK-NEXT:    br label %[[PRED_LOAD_CONTINUE6]]
+; CHECK:       [[PRED_LOAD_CONTINUE6]]:
+; CHECK-NEXT:    [[TMP25:%.*]] = phi <2 x i8> [ [[TMP21]], %[[PRED_LOAD_CONTINUE4]] ], [ [[TMP24]], %[[PRED_LOAD_IF5]] ]
+; CHECK-NEXT:    [[PREDPHI:%.*]] = select <2 x i1> [[TMP8]], <2 x i8> [[TMP25]], <2 x i8> [[TMP17]]
+; CHECK-NEXT:    [[TMP26:%.*]] = getelementptr inbounds i8, ptr [[DST]], i32 [[INDEX]]
+; CHECK-NEXT:    store <2 x i8> [[PREDPHI]], ptr [[TMP26]], align 1
+; CHECK-NEXT:    [[TMP27:%.*]] = getelementptr inbounds i64, ptr [[DST_IDX]], i32 [[INDEX]]
+; CHECK-NEXT:    store <2 x i64> [[TMP1]], ptr [[TMP27]], align 8
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 2
+; CHECK-NEXT:    [[TMP28:%.*]] = icmp eq i32 [[INDEX_NEXT]], 100
+; CHECK-NEXT:    br i1 [[TMP28]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP91:![0-9]+]]
+; CHECK:       [[MIDDLE_BLOCK]]:
+; CHECK-NEXT:    br label %[[EXIT:.*]]
+; CHECK:       [[EXIT]]:
+; CHECK-NEXT:    ret void
+;
+entry:
+  br label %loop
+
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %iv.next, %loop.latch ]
+  %gep.cond = getelementptr inbounds i32, ptr %cond, i32 %iv
+  %l.c = load i32, ptr %gep.cond
+  %c = icmp ule i32 %l.c, 11
+  %k.sub = sub nsw i8 %k, -1
+  %idx.else = sext i8 %k.sub to i64
+  br i1 %c, label %then, label %else
+
+then:
+  %k.ext = sext i8 %k to i64
+  %idx.then = add nsw i64 %k.ext, 1
+  %gep.then = getelementptr inbounds i8, ptr %p, i64 %idx.then
+  %l.then = load i8, ptr %gep.then, align 1
+  br label %loop.latch
+
+else:
+  %gep.else = getelementptr inbounds i8, ptr %p, i64 %idx.else
+  %l.else = load i8, ptr %gep.else, align 1
+  br label %loop.latch
+
+loop.latch:
+  %merge = phi i8 [ %l.then, %then ], [ %l.else, %else ]
+  %gep.dst = getelementptr inbounds i8, ptr %dst, i32 %iv
+  store i8 %merge, ptr %gep.dst, align 1
+  %gep.dst.idx = getelementptr inbounds i64, ptr %dst.idx, i32 %iv
+  store i64 %idx.else, ptr %gep.dst.idx, align 8
+  %iv.next = add nuw nsw i32 %iv, 1
+  %ec = icmp eq i32 %iv.next, 100
+  br i1 %ec, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+; The addresses p[%k + 1] in %then and p[or disjoint %k, 1] in %else are only
+; equal if the or is disjoint. It may not be in iterations that only execute
+; %then, so the loads must not be hoisted to a single load using the address
+; from %else.
+define void @or_disjoint_address_in_one_branch(ptr noalias %dst, ptr noalias %cond, ptr noalias %p, i64 %k) {
+; CHECK-LABEL: define void @or_disjoint_address_in_one_branch(
+; CHECK-SAME: ptr noalias [[DST:%.*]], ptr noalias [[COND:%.*]], ptr noalias [[P:%.*]], i64 [[K:%.*]]) {
+; CHECK-NEXT:  [[ENTRY:.*:]]
+; CHECK-NEXT:    br label %[[VECTOR_PH:.*]]
+; CHECK:       [[VECTOR_PH]]:
+; CHECK-NEXT:    [[TMP0:%.*]] = or disjoint i64 [[K]], 1
+; CHECK-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i8, ptr [[P]], i64 [[TMP0]]
+; CHECK-NEXT:    br label %[[VECTOR_BODY:.*]]
+; CHECK:       [[VECTOR_BODY]]:
+; CHECK-NEXT:    [[INDEX:%.*]] = phi i32 [ 0, %[[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], %[[VECTOR_BODY]] ]
+; CHECK-NEXT:    [[TMP2:%.*]] = load i8, ptr [[TMP1]], align 1
+; CHECK-NEXT:    [[BROADCAST_SPLATINSERT:%.*]] = insertelement <2 x i8> poison, i8 [[TMP2]], i64 0
+; CHECK-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <2 x i8> [[BROADCAST_SPLATINSERT]], <2 x i8> poison, <2 x i32> zeroinitializer
+; CHECK-NEXT:    [[TMP3:%.*]] = getelementptr inbounds i8, ptr [[DST]], i32 [[INDEX]]
+; CHECK-NEXT:    store <2 x i8> [[BROADCAST_SPLAT]], ptr [[TMP3]], align 1
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i32 [[INDEX]], 2
+; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq i32 [[INDEX_NEXT]], 100
+; CHECK-NEXT:    br i1 [[TMP4]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP92:![0-9]+]]
+; CHECK:       [[MIDDLE_BLOCK]]:
+; CHECK-NEXT:    br label %[[EXIT:.*]]
+; CHECK:       [[EXIT]]:
+; CHECK-NEXT:    ret void
+;
+entry:
+  br label %loop
+
+loop:
+  %iv = phi i32 [ 0, %entry ], [ %iv.next, %loop.latch ]
+  %gep.cond = getelementptr inbounds i32, ptr %cond, i32 %iv
+  %l.c = load i32, ptr %gep.cond
+  %c = icmp ule i32 %l.c, 11
+  br i1 %c, label %then, label %else
+
+then:
+  %idx.then = add i64 %k, 1
+  %gep.then = getelementptr inbounds i8, ptr %p, i64 %idx.then
+  %l.then = load i8, ptr %gep.then, align 1
+  br label %loop.latch
+
+else:
+  %idx.else = or disjoint i64 %k, 1
+  %gep.else = getelementptr inbounds i8, ptr %p, i64 %idx.else
+  %l.else = load i8, ptr %gep.else, align 1
+  br label %loop.latch
+
+loop.latch:
+  %merge = phi i8 [ %l.then, %then ], [ %l.else, %else ]
+  %gep.dst = getelementptr inbounds i8, ptr %dst, i32 %iv
+  store i8 %merge, ptr %gep.dst, align 1
+  %iv.next = add nuw nsw i32 %iv, 1
+  %ec = icmp eq i32 %iv.next, 100
+  br i1 %ec, label %exit, label %loop
+
+exit:
+  ret void
+}

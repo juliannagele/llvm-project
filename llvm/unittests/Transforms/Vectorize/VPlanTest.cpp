@@ -37,6 +37,84 @@ namespace {
 using VPInstructionTest = VPlanTestBase;
 using VPlanSCEVTest = VPlanTestIRBase;
 
+TEST_F(VPlanSCEVTest, GetSCEVExprForVPValueSExtSubNSWMasked) {
+  const char *ModuleString = R"(
+define void @f(ptr %p, i8 %a, i8 %b, i1 %c) {
+entry:
+  br label %loop
+loop:
+  %sub = sub nsw i8 %a, %b
+  %ext = sext i8 %sub to i64
+  %gep = getelementptr i8, ptr %p, i64 %ext
+  %l = load i8, ptr %gep
+  br label %loop
+}
+)";
+
+  Module &M = parseModule(ModuleString);
+  Function *F = M.getFunction("f");
+  BasicBlock *LoopHeader = F->getEntryBlock().getSingleSuccessor();
+  doAnalysis(*F);
+
+  Loop *L = LI->getLoopFor(LoopHeader);
+  PredicatedScalarEvolution PSE(*SE, *L);
+  VPlan Plan(LoopHeader, IntegerType::get(*Ctx, 32));
+  auto *Sub = cast<BinaryOperator>(&LoopHeader->front());
+  auto *Ext = cast<CastInst>(Sub->getNextNode());
+  auto *GEP = cast<GetElementPtrInst>(Ext->getNextNode());
+  auto *Load = cast<LoadInst>(GEP->getNextNode());
+  VPValue *P = Plan.getOrAddLiveIn(F->getArg(0));
+  VPValue *A = Plan.getOrAddLiveIn(F->getArg(1));
+  VPValue *B = Plan.getOrAddLiveIn(F->getArg(2));
+
+  VPBasicBlock *VPBB = Plan.createVPBasicBlock("loop");
+  VPRegionBlock *Region = Plan.createLoopRegion(IntegerType::get(*Ctx, 64),
+                                                DebugLoc(), "loop", VPBB, VPBB);
+  VPValue *HeaderMask = Region->createHeaderMask();
+  auto *SubR = new VPWidenRecipe(*Sub, {A, B}, VPIRFlags(*Sub));
+  auto *ExtR = new VPWidenCastRecipe(Instruction::SExt, SubR, Ext->getType(),
+                                     Ext, VPIRFlags(*Ext));
+  auto *GEPR = new VPWidenGEPRecipe(GEP->getSourceElementType(), {P, ExtR},
+                                    VPIRFlags(*GEP), DebugLoc(), GEP);
+  auto *ReverseMask =
+      new VPInstruction(VPInstruction::Reverse, {HeaderMask}, {}, {});
+  VPBB->appendRecipe(SubR);
+  VPBB->appendRecipe(ExtR);
+  VPBB->appendRecipe(GEPR);
+  VPBB->appendRecipe(ReverseMask);
+
+  Type *I64Ty = Ext->getType();
+  const SCEV *Folded = SE->getMinusSCEV(
+      SE->getSignExtendExpr(SE->getSCEV(F->getArg(1)), I64Ty),
+      SE->getSignExtendExpr(SE->getSCEV(F->getArg(2)), I64Ty), SCEV::FlagNSW);
+
+  // Returns the SCEV of the sext if the GEP is the address of a load with
+  // \p Mask, the only memory access.
+  auto GetSExtSCEVWithLoadMask = [&](VPValue *Mask) {
+    auto *LoadR = new VPWidenLoadRecipe(*Load, GEPR, Mask,
+                                        /*Consecutive=*/false, Load->getAlign(),
+                                        {}, DebugLoc());
+    VPBB->appendRecipe(LoadR);
+    const SCEV *S = vputils::getSCEVExprForVPValue(ExtR, PSE, L);
+    LoadR->eraseFromParent();
+    return S;
+  };
+
+  // Lanes masked off by the header mask do not correspond to iterations of the
+  // original loop, so the sub does not overflow in any lane the load accesses.
+  EXPECT_EQ(Folded, GetSExtSCEVWithLoadMask(nullptr));
+  EXPECT_EQ(Folded, GetSExtSCEVWithLoadMask(HeaderMask));
+  EXPECT_EQ(Folded, GetSExtSCEVWithLoadMask(ReverseMask));
+
+  // A load with another mask may not access memory in lanes in which the sub
+  // overflows.
+  VPValue *C = Plan.getOrAddLiveIn(F->getArg(3));
+  EXPECT_EQ(SE->getSignExtendExpr(SE->getMinusSCEV(SE->getSCEV(F->getArg(1)),
+                                                   SE->getSCEV(F->getArg(2))),
+                                  I64Ty),
+            GetSExtSCEVWithLoadMask(C));
+}
+
 TEST_F(VPlanSCEVTest, GetSCEVExprForVPValueAbs) {
   const char *ModuleString = R"(
 define void @f(i32 %x) {

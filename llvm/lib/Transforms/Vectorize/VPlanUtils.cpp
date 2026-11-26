@@ -116,11 +116,53 @@ static bool isInRegion(const VPBlockBase *VPB, const VPRegionBlock *R) {
   return true;
 }
 
-/// Returns true if \p V being poison is guaranteed to trigger UB because it
-/// propagates to the address of a memory recipe.
+/// Returns true if \p R executes whenever \p DefR executes, in the same
+/// iteration of DefR's loop. This holds if R is in the loop region of DefR or
+/// in a loop region nested in it, and R's block post-dominates DefR's block. A
+/// nested loop region executes at least one iteration whenever it is entered.
+static bool executesWhenever(const VPRecipeBase *R, const VPRecipeBase *DefR,
+                             std::optional<VPPostDominatorTree> &PDT) {
+  const VPBasicBlock *VPBB = R->getParent();
+  const VPBasicBlock *DefVPBB = DefR->getParent();
+  if (VPBB == DefVPBB)
+    return true;
+  // In a region outside DefR's region, R may only see the value DefR computed
+  // in some iterations of DefR's region.
+  if (!isInRegion(VPBB, DefVPBB->getParent()))
+    return false;
+  // Computing the post-dominator tree only reads the plan.
+  if (!PDT)
+    PDT.emplace(const_cast<VPlan &>(*DefVPBB->getPlan()));
+  // dominates() returns true if DefVPBB is not in the tree, e.g. if it does
+  // not reach an exit of the plan, so check that both blocks are in it.
+  return PDT->getNode(VPBB) && PDT->getNode(DefVPBB) &&
+         PDT->dominates(VPBB, DefVPBB);
+}
+
+/// Returns true if \p V being poison is guaranteed to trigger UB, because it
+/// propagates to the address of a memory recipe that accesses memory for all
+/// active lanes whenever \p V is computed. A memory recipe masked by anything
+/// but the header mask may not access memory for lanes that compute poison.
+/// Memory accesses that are still VPInstructions, as in VPlan0, are not
+/// recognized, so this conservatively returns false there.
 static bool poisonGuaranteesUB(const VPValue *V) {
+  const VPRecipeBase *DefR = V->getDefiningRecipe();
+  if (!DefR || !DefR->getParent())
+    return false;
   SmallPtrSet<const VPValue *, 8> Visited;
   SmallVector<const VPValue *, 16> Worklist;
+  std::optional<VPPostDominatorTree> PDT;
+
+  // Returns true if the memory recipe \p MemR with mask \p Mask accesses
+  // memory for all active lanes whenever V is computed. Lanes masked off by
+  // the header mask are not active, as they do not correspond to iterations
+  // of the original loop.
+  auto IsSink = [&](const VPRecipeBase *MemR, const VPValue *Mask) {
+    if (Mask &&
+        !match(Mask, m_CombineOr(m_HeaderMask(), m_Reverse(m_HeaderMask()))))
+      return false;
+    return executesWhenever(MemR, DefR, PDT);
+  };
 
   auto PropagatesPoisonFromRecipeOp = [](const VPRecipeBase *R) {
     if (!isa<VPSingleDefRecipe>(R))
@@ -140,14 +182,15 @@ static bool poisonGuaranteesUB(const VPValue *V) {
       // Check if Current is used as an address operand for load/store.
       auto *R = cast<VPRecipeBase>(U);
       if (auto *MemR = dyn_cast<VPWidenMemoryRecipe>(R)) {
-        if (MemR->getAddr() == Current)
+        if (MemR->getAddr() == Current && IsSink(R, MemR->getMask()))
           return true;
         continue;
       }
       if (auto *Rep = dyn_cast<VPReplicateRecipe>(U)) {
         unsigned Opcode = Rep->getOpcode();
-        if ((Opcode == Instruction::Load && Rep->getOperand(0) == Current) ||
-            (Opcode == Instruction::Store && Rep->getOperand(1) == Current))
+        if (((Opcode == Instruction::Load && Rep->getOperand(0) == Current) ||
+             (Opcode == Instruction::Store && Rep->getOperand(1) == Current)) &&
+            IsSink(R, Rep->isPredicated() ? Rep->getMask() : nullptr))
           return true;
       }
 
