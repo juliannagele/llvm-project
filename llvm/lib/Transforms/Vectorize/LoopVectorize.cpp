@@ -5066,7 +5066,11 @@ void LoopVectorizationPlanner::plan(ElementCount UserVF, unsigned UserIC) {
   if (MaxFactors.FixedVF.isVector() || MaxFactors.ScalableVF.isVector())
     Legal->collectUnitStridePredicates();
 
-  auto VPlan1 = tryToBuildVPlan1(*CM);
+  // For outer loops, computeMaxVF returns a single non-scalar VF; build a plan
+  // for that VF only.
+  ElementCount OuterLoopVF =
+      MaxFactors.FixedVF ? MaxFactors.FixedVF : MaxFactors.ScalableVF;
+  auto VPlan1 = tryToBuildVPlan1(*CM, OuterLoopVF);
   if (!VPlan1)
     return;
 
@@ -5074,11 +5078,7 @@ void LoopVectorizationPlanner::plan(ElementCount UserVF, unsigned UserIC) {
                        "vectorized.\n");
 
   if (!OrigLoop->isInnermost()) {
-    // For outer loops, computeMaxVF returns a single non-scalar VF; build a
-    // plan for that VF only.
-    ElementCount VF =
-        MaxFactors.FixedVF ? MaxFactors.FixedVF : MaxFactors.ScalableVF;
-    buildVPlans(*VPlan1, VF, VF, *CM);
+    buildVPlans(*VPlan1, OuterLoopVF, OuterLoopVF, *CM);
     LLVM_DEBUG(printPlans(dbgs()));
     return;
   }
@@ -6192,7 +6192,8 @@ static bool verifyExecutionFrequenciesMatchBFI(VPlan &Plan, Loop *OrigLoop,
 #endif
 
 VPlanPtr
-LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
+LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM,
+                                           ElementCount OuterLoopVF) {
   bool IsInnerLoop = OrigLoop->isInnermost();
 
   // Set up loop versioning for inner loops with memory runtime checks.
@@ -6220,7 +6221,7 @@ LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
   VPDominatorTree VPDT(*VPlan0);
   if (const LoopAccessInfo *LAI = Legal->getLAI())
     RUN_VPLAN_PASS(VPlanTransforms::replaceSymbolicStrides, *VPlan0, PSE,
-                   LAI->getSymbolicStrides(), VPDT);
+                   to_vector(LAI->getSymbolicStrides().values()), VPDT);
   RUN_VPLAN_PASS(VPlanTransforms::combineRecipes, *VPlan0);
   RUN_VPLAN_PASS(VPlanTransforms::removeDeadRecipes, *VPlan0);
   if (IsInnerLoop) {
@@ -6239,9 +6240,44 @@ LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
     return nullptr;
   }
 
+  bool ForceVectorization =
+      Config.getHints().getForce() == LoopVectorizeHints::FK_Enabled;
+  bool OptForSize = !ForceVectorization && PlanCM.EpilogueLoweringStatus ==
+                                               CM_EpilogueNotAllowedOptSize;
+  unsigned SCEVCheckThreshold = ForceVectorization
+                                    ? Opts.pragma_vectorize_scev_check_threshold
+                                    : Opts.vectorize_scev_check_threshold;
+
   if (const LoopAccessInfo *LAI = Legal->getLAI())
     RUN_VPLAN_PASS(VPlanTransforms::replaceSymbolicStrides, *VPlan0, PSE,
-                   LAI->getSymbolicStrides(), VPDT);
+                   to_vector(LAI->getSymbolicStrides().values()), VPDT);
+  // Outer loops have no LoopAccessInfo. Version them on runtime strides of
+  // interleave groups instead, before the memory safety proof and the checks
+  // of the SCEV predicates below.
+  if (!IsInnerLoop && useInterleavedAccesses(Opts, TTI)) {
+    SmallVector<const SCEVUnknown *> Strides = RUN_VPLAN_PASS(
+        VPlanTransforms::speculateOuterLoopGroupStrides, *VPlan0, PSE,
+        *OrigLoop, OuterLoopVF, OptForSize ? 0 : SCEVCheckThreshold);
+    RUN_VPLAN_PASS(VPlanTransforms::replaceSymbolicStrides, *VPlan0, PSE,
+                   Strides, VPDT);
+  }
+
+  // Like for inner loops, pointer inductions with a non-constant step need
+  // -lv-strided-pointer-ivs. Stride versioning may have made the step constant.
+  if (!IsInnerLoop && !Opts.lv_strided_pointer_ivs) {
+    auto [Header, _] = VPBlockUtils::getPlainCFGHeaderAndLatch(*VPlan0);
+    for (VPWidenPointerInductionRecipe &PtrIV :
+         make_isa_range<VPWidenPointerInductionRecipe>(Header->phis())) {
+      if (isa<VPConstantInt>(PtrIV.getStepValue()))
+        continue;
+      reportVectorizationFailure("Found a disallowed pointer induction",
+                                 "pointer induction with a non-constant step "
+                                 "could not be vectorized",
+                                 "StridedPointerInduction", ORE, OrigLoop,
+                                 cast<PHINode>(PtrIV.getUnderlyingValue()));
+      return nullptr;
+    }
+  }
 
   // Without -vplan-outer-loop-legality-checks, trust the explicit vectorization
   // pragma that vectorizing the outer loop is safe.
@@ -6256,13 +6292,6 @@ LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
   }
 
   // Add surviving induction predicates to PSE and check constraints.
-  bool ForceVectorization =
-      Config.getHints().getForce() == LoopVectorizeHints::FK_Enabled;
-  bool OptForSize = !ForceVectorization && PlanCM.EpilogueLoweringStatus ==
-                                               CM_EpilogueNotAllowedOptSize;
-  unsigned SCEVCheckThreshold = ForceVectorization
-                                    ? Opts.pragma_vectorize_scev_check_threshold
-                                    : Opts.vectorize_scev_check_threshold;
   if (!RUN_VPLAN_PASS(VPlanTransforms::finalizeSCEVPredicates, *VPlan0, PSE,
                       OptForSize, SCEVCheckThreshold, ORE, OrigLoop))
     return nullptr;

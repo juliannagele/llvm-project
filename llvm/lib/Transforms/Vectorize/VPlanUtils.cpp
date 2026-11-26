@@ -243,8 +243,24 @@ vputils::getNestedLoopHeaders(const VPlan &Plan, const Loop &OuterLoop) {
   for (const Loop *L : OuterLoop.getLoopsInPreorder())
     IRHeaderToLoop[L->getHeader()] = L;
   DenseMap<const VPBasicBlock *, const Loop *> HeaderVPBBToLoop;
+  const VPRegionBlock *LoopRegion = Plan.getVectorLoopRegion();
+  if (!LoopRegion) {
+    // In a plain CFG, the headers are the blocks of the loop body that start
+    // with a phi of the header of a nested IR loop.
+    auto [Header, _] = VPBlockUtils::getPlainCFGHeaderAndLatch(Plan);
+    for (const VPBasicBlock *VPBB : vp_rpo_plain_cfg_loop_body(Header)) {
+      auto *PhiR =
+          dyn_cast_or_null<VPPhi>(VPBB->empty() ? nullptr : &VPBB->front());
+      auto *Phi = PhiR ? dyn_cast_or_null<PHINode>(PhiR->getUnderlyingValue())
+                       : nullptr;
+      const Loop *L = Phi ? IRHeaderToLoop.lookup(Phi->getParent()) : nullptr;
+      if (L && L != &OuterLoop)
+        HeaderVPBBToLoop[VPBB] = L;
+    }
+    return HeaderVPBBToLoop;
+  }
   for (const VPRegionBlock *R : VPBlockUtils::blocksOnly<const VPRegionBlock>(
-           vp_depth_first_deep(Plan.getVectorLoopRegion()->getEntry()))) {
+           vp_depth_first_deep(LoopRegion->getEntry()))) {
     const VPBasicBlock *HeaderVPBB = R->getEntryBasicBlock();
     if (HeaderVPBB->empty() || !HeaderVPBB->front().isPhi())
       continue;
@@ -305,10 +321,18 @@ getSCEVForNestedHeaderPhi(const VPPhi *PhiR, PredicatedScalarEvolution &PSE,
   if (!PhiLoop)
     return SE.getCouldNotCompute();
   VPValue *StepV = vputils::getIntInductionStep(PhiR);
-  // Only look at steps defined outside the phi's region; this also ensures
-  // that the recursion terminates.
-  if (!StepV ||
-      vputils::isDefinedInRegion(StepV, PhiR->getParent()->getParent()))
+  // Only look at steps defined outside the phi's loop; this also ensures that
+  // the recursion terminates. In a plain CFG, which has no regions yet, use
+  // the IR instruction of the step.
+  auto IsDefinedInPhiLoop = [&]() {
+    if (const VPRegionBlock *PhiRegion = PhiR->getParent()->getParent())
+      return vputils::isDefinedInRegion(StepV, PhiRegion);
+    if (isa<VPIRValue>(StepV))
+      return false;
+    auto *I = dyn_cast_or_null<Instruction>(StepV->getUnderlyingValue());
+    return !I || PhiLoop->contains(I);
+  };
+  if (!StepV || IsDefinedInPhiLoop())
     return SE.getCouldNotCompute();
   const SCEV *Start =
       vputils::getSCEVExprForVPValue(PhiR->getOperand(0), PSE, Ctx);

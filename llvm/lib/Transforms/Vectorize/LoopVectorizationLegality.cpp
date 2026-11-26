@@ -788,13 +788,14 @@ static bool isDisallowedStridedPointerInduction(const InductionDescriptor &ID,
 bool LoopVectorizationLegality::setupOuterLoopInductions() {
   BasicBlock *Header = TheLoop->getHeader();
 
-  // Returns true if a given Phi is a supported induction.
+  // Returns true if a given Phi is a supported induction. Unlike for inner
+  // loops, pointer inductions with a non-constant step are accepted: the
+  // planner rejects them unless versioning makes the step constant.
   auto IsSupportedPhi = [&](PHINode &Phi) -> bool {
     InductionDescriptor ID;
     if (InductionDescriptor::isInductionPHI(&Phi, TheLoop, PSE, ID) &&
         (ID.getKind() == InductionDescriptor::IK_IntInduction ||
-         ID.getKind() == InductionDescriptor::IK_PtrInduction) &&
-        !isDisallowedStridedPointerInduction(ID, Opts)) {
+         ID.getKind() == InductionDescriptor::IK_PtrInduction)) {
       addInductionPhi(&Phi, ID);
       return true;
     }

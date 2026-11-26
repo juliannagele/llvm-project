@@ -1101,8 +1101,9 @@ private:
   /// Build an initial VPlan, with HCFG wrapping the original scalar loop and
   /// scalar transformations applied. Returns null if an initial VPlan cannot
   /// be built. \p PlanCM is the cost model to use for decisions made while
-  /// building the plan.
-  VPlanPtr tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM);
+  /// building the plan. \p OuterLoopVF is the VF of outer-loop plans.
+  VPlanPtr tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM,
+                            ElementCount OuterLoopVF = ElementCount());
 
   /// Build a VPlan using VPRecipes according to the information gathered by
   /// Legal and VPlan-based analysis. For outer loops, performs basic recipe

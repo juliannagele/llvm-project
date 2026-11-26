@@ -26,6 +26,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Analysis/IVDescriptors.h"
 #include "llvm/Analysis/Loads.h"
@@ -33,6 +34,7 @@
 #include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/ScalarEvolutionPatternMatch.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/MDBuilder.h"
@@ -2889,7 +2891,7 @@ void VPlanTransforms::simplifyLiveInsWithSCEV(VPlan &Plan,
 
 void VPlanTransforms::replaceSymbolicStrides(
     VPlan &Plan, PredicatedScalarEvolution &PSE,
-    const SymbolicStrideMap &StridesMap, const VPDominatorTree &VPDT) {
+    ArrayRef<const SCEVUnknown *> Strides, const VPDominatorTree &VPDT) {
   // Replace VPValues for known constant strides guaranteed by predicated scalar
   // evolution that are guaranteed to be guarded by the runtime checks; that is,
   // blocks dominated by the vector header.
@@ -2905,7 +2907,7 @@ void VPlanTransforms::replaceSymbolicStrides(
     return VPDT.dominates(Header, R->getParent());
   };
   ValueToSCEVMapTy RewriteMap;
-  for (const SCEVUnknown *Stride : StridesMap.values()) {
+  for (const SCEVUnknown *Stride : Strides) {
     Value *StrideV = Stride->getValue();
     const APInt *StrideConst;
     const SCEV *StrideExpr = PSE.getSCEV(StrideV);
@@ -3179,11 +3181,13 @@ struct GroupCandidate {
 } // namespace
 
 /// Returns a candidate for the load or store \p I of recipe \p R with address
-/// \p Addr, if its stride in \p OuterLoop is a constant > 1.
+/// \p Addr, if its stride in \p OuterLoop is a constant > 1 or, if
+/// \p AllowRuntimeStride, a runtime value that is invariant in \p OuterLoop.
 static std::optional<GroupCandidate> getGroupCandidate(
     VPRecipeBase &R, Instruction &I, VPValue *Addr,
     PredicatedScalarEvolution &PSE, const Loop &OuterLoop,
-    const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop) {
+    const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop,
+    bool AllowRuntimeStride) {
   ScalarEvolution &SE = *PSE.getSE();
   const DataLayout &DL = I.getDataLayout();
   Type *AccessTy = getLoadStoreType(&I);
@@ -3197,8 +3201,11 @@ static std::optional<GroupCandidate> getGroupCandidate(
     return std::nullopt;
   const SCEV *LaneDist = vputils::getLaneDistance(AddrSCEV, OuterLoop, SE);
   const APInt *Dist;
-  if (!match(LaneDist, m_scev_APInt(Dist)))
-    return std::nullopt;
+  if (!match(LaneDist, m_scev_APInt(Dist))) {
+    if (!AllowRuntimeStride || !SE.isLoopInvariant(LaneDist, &OuterLoop))
+      return std::nullopt;
+    return GroupCandidate{&I, AddrSCEV, LaneDist};
+  }
   std::optional<int64_t> DistInBytes = Dist->trySExtValue();
   int64_t Size = DL.getTypeAllocSize(AccessTy).getFixedValue();
   // TODO: Support reverse groups.
@@ -3241,18 +3248,24 @@ static void forEachCandidateRun(
 }
 
 /// Returns the full interleave groups formed from the candidates of \p Run
-/// (see forEachCandidateRun). A load group is emitted at its first member, so
-/// loads only move across loads. A store group is emitted at its last member,
-/// so its members must be adjacent in the run; stores then only move across
-/// stores to other members of the group. Full groups need no no-wrap checks,
-/// for the reasons given in InterleavedAccessInfo::collectConstStrideAccesses.
-/// The factor of a group is its stride in elements.
+/// (see forEachCandidateRun), with their lane distance. A load group is
+/// emitted at its first member, so loads only move across loads. A store group
+/// is emitted at its last member, so its members must be adjacent in the run;
+/// stores then only move across stores to other members of the group. Full
+/// groups need no no-wrap checks, for the reasons given in
+/// InterleavedAccessInfo::collectConstStrideAccesses. The factor of a group is
+/// its stride in elements. For a runtime stride, it is the size of the
+/// contiguous range of member indices that contains the leader, and the group
+/// is only full if the stride is the factor.
 /// TODO: Use alias information to form groups across other accesses, and
 /// support groups with gaps.
-static SmallVector<std::unique_ptr<InterleaveGroup<Instruction>>>
+static SmallVector<
+    std::pair<std::unique_ptr<InterleaveGroup<Instruction>>, const SCEV *>>
 formFullGroups(ArrayRef<GroupCandidate> Run, ScalarEvolution &SE,
                const DataLayout &DL, int64_t MaxFactor) {
-  SmallVector<std::unique_ptr<InterleaveGroup<Instruction>>> Groups;
+  SmallVector<
+      std::pair<std::unique_ptr<InterleaveGroup<Instruction>>, const SCEV *>>
+      Groups;
   // Returns the index of \p C relative to \p Leader if \p C may be a member of
   // the group of \p Leader.
   auto GetIndex = [&](const GroupCandidate &Leader,
@@ -3275,10 +3288,26 @@ formFullGroups(ArrayRef<GroupCandidate> Run, ScalarEvolution &SE,
     if (Grouped[LeaderIdx])
       continue;
     // A full group needs Factor members.
-    int64_t Factor =
-        cast<SCEVConstant>(Leader.LaneDist)->getAPInt().getSExtValue() /
-        DL.getTypeAllocSize(getLoadStoreType(Leader.I)).getFixedValue();
-    if (Factor > MaxFactor || Factor > static_cast<int64_t>(Run.size()))
+    int64_t Factor;
+    const APInt *Dist;
+    if (match(Leader.LaneDist, m_scev_APInt(Dist))) {
+      Factor = Dist->getSExtValue() /
+               DL.getTypeAllocSize(getLoadStoreType(Leader.I)).getFixedValue();
+    } else {
+      SmallSet<int64_t, 8> Indices;
+      for (auto [Idx, C] : enumerate(Run))
+        if (!Grouped[Idx])
+          if (std::optional<int64_t> Index = GetIndex(Leader, C))
+            Indices.insert(*Index);
+      int64_t Lo = 0, Hi = 0;
+      while (Indices.contains(Lo - 1))
+        --Lo;
+      while (Indices.contains(Hi + 1))
+        ++Hi;
+      Factor = Hi - Lo + 1;
+    }
+    if (Factor < 2 || Factor > MaxFactor ||
+        Factor > static_cast<int64_t>(Run.size()))
       continue;
     auto Group = std::make_unique<InterleaveGroup<Instruction>>(
         Leader.I, Factor, getLoadStoreAlignment(Leader.I));
@@ -3307,7 +3336,7 @@ formFullGroups(ArrayRef<GroupCandidate> Run, ScalarEvolution &SE,
     Group->setInsertPos(Run[IsLoad ? MemberIdxs.front() : MemberIdxs.back()].I);
     for (unsigned Idx : MemberIdxs)
       Grouped[Idx] = true;
-    Groups.push_back(std::move(Group));
+    Groups.emplace_back(std::move(Group), Leader.LaneDist);
   }
   return Groups;
 }
@@ -3320,6 +3349,140 @@ static int64_t getMaxOuterLoopGroupFactor(const Loop &OuterLoop,
       getMaxInterleaveGroupFactor(OuterLoop.getHeader()->getContext());
   // Scalable VFs support interleave factors up to 8 only.
   return IsScalable ? std::min<int64_t>(MaxFactor, 8) : MaxFactor;
+}
+
+/// If the lane distance \p LaneDist is a runtime stride of the form
+/// C0 * ext(U), with an optional constant C0 and an optional extension or
+/// truncation of a value U, returns U and the constant that U must be for
+/// LaneDist to be \p Value. Returns std::nullopt if there is none or U is
+/// known not to be it.
+static std::optional<std::pair<const SCEVUnknown *, const SCEVConstant *>>
+getStrideValue(const SCEV *LaneDist, int64_t Value, ScalarEvolution &SE,
+               const DataLayout &DL) {
+  const SCEV *Stride = LaneDist;
+  int64_t StrideValue = Value;
+  const APInt *Scale;
+  if (match(LaneDist, m_scev_Mul(m_scev_APInt(Scale), m_SCEV(Stride)))) {
+    std::optional<int64_t> S = Scale->trySExtValue();
+    if (!S || Value % *S != 0)
+      return std::nullopt;
+    StrideValue = Value / *S;
+  }
+  bool IsZExt = isa<SCEVZeroExtendExpr>(Stride);
+  if (auto *Cast = dyn_cast<SCEVIntegralCastExpr>(Stride))
+    Stride = Cast->getOperand();
+  auto *StrideU = dyn_cast<SCEVUnknown>(Stride);
+  if (!StrideU || match(StrideU, m_scev_UndefOrPoison()))
+    return std::nullopt;
+  unsigned BitWidth = StrideU->getType()->getScalarSizeInBits();
+  if (IsZExt ? !isUIntN(BitWidth, StrideValue) : !isIntN(BitWidth, StrideValue))
+    return std::nullopt;
+  auto *C = cast<SCEVConstant>(
+      SE.getConstant(StrideU->getType(), StrideValue, /*isSigned=*/!IsZExt));
+  // LaneDist must be Value for U == C, which a truncation may not preserve.
+  ValueToSCEVMapTy StrideToC = {{StrideU->getValue(), C}};
+  if (SCEVParameterRewriter::rewrite(LaneDist, SE, StrideToC) !=
+          SE.getConstant(LaneDist->getType(), Value, /*isSigned=*/true) ||
+      SE.isKnownPredicate(CmpInst::ICMP_NE, StrideU, C) ||
+      isKnownNonEqual(StrideU->getValue(), C->getValue(), SimplifyQuery(DL)))
+    return std::nullopt;
+  return std::make_pair(StrideU, C);
+}
+
+SmallVector<const SCEVUnknown *>
+VPlanTransforms::speculateOuterLoopGroupStrides(VPlan &Plan,
+                                                PredicatedScalarEvolution &PSE,
+                                                const Loop &OuterLoop,
+                                                ElementCount VF,
+                                                unsigned MaxComplexity) {
+  SmallVector<const SCEVUnknown *> Strides;
+  if (VF.isScalar())
+    return Strides;
+  ScalarEvolution &SE = *PSE.getSE();
+  const DataLayout &DL = Plan.getDataLayout();
+  int64_t MaxFactor = getMaxOuterLoopGroupFactor(OuterLoop, VF.isScalable());
+  DenseMap<const VPBasicBlock *, const Loop *> HeaderVPBBToLoop =
+      vputils::getNestedLoopHeaders(Plan, OuterLoop);
+
+  // The values of each runtime stride that make groups full, in program
+  // order, with the number of group members that ask for them.
+  struct StrideValue {
+    const SCEVConstant *C;
+    unsigned NumMembers;
+  };
+  MapVector<const SCEVUnknown *, SmallVector<StrideValue, 1>> Requests;
+  auto [Header, _] = VPBlockUtils::getPlainCFGHeaderAndLatch(Plan);
+  forEachCandidateRun(
+      vp_rpo_plain_cfg_loop_body(Header),
+      [&](VPRecipeBase &R) -> std::optional<GroupCandidate> {
+        VPValue *Addr;
+        if (!match(&R, m_CombineOr(
+                           m_VPInstruction<Instruction::Load>(m_VPValue(Addr)),
+                           m_VPInstruction<Instruction::Store>(
+                               m_VPValue(), m_VPValue(Addr)))))
+          return std::nullopt;
+        // Outer-loop plans are not predicated: legality only accepts branches
+        // that are uniform across lanes, so no group member is masked.
+        // TODO: Skip predicated blocks once outer-loop plans support masks.
+        auto *I = dyn_cast_or_null<Instruction>(
+            cast<VPInstruction>(R).getUnderlyingValue());
+        if (!I)
+          return std::nullopt;
+        return getGroupCandidate(R, *I, Addr, PSE, OuterLoop, HeaderVPBBToLoop,
+                                 /*AllowRuntimeStride=*/true);
+      },
+      [&](ArrayRef<GroupCandidate> Run) {
+        for (auto &[Group, LaneDist] : formFullGroups(Run, SE, DL, MaxFactor)) {
+          if (isa<SCEVConstant>(LaneDist))
+            continue;
+          int64_t Size =
+              DL.getTypeAllocSize(getLoadStoreType(Group->getInsertPos()))
+                  .getFixedValue();
+          auto UAndC =
+              getStrideValue(LaneDist, Group->getFactor() * Size, SE, DL);
+          if (!UAndC)
+            continue;
+          SmallVector<StrideValue, 1> &Values = Requests[UAndC->first];
+          auto *It = find_if(
+              Values, [&](StrideValue &V) { return V.C == UAndC->second; });
+          if (It == Values.end())
+            It = &Values.emplace_back(StrideValue{UAndC->second, 0});
+          It->NumMembers += Group->getNumMembers();
+        }
+      });
+
+  // Version each stride on one value: the one that makes the most loads and
+  // stores group members, or the first of them in program order. Skip it if
+  // the loop then has fewer iterations than VF, so the vector loop would never
+  // execute, or if the predicates would exceed \p MaxComplexity, counting the
+  // no-wrap predicates of the inductions, which finalizeSCEVPredicates adds.
+  unsigned Complexity = PSE.getPredicate().getComplexity();
+  for (VPWidenInductionRecipe &WideIV :
+       make_isa_range<VPWidenInductionRecipe>(Header->phis()))
+    for (const SCEVPredicate *P : WideIV.getNoWrapPredicates())
+      Complexity += P->getComplexity();
+  const SCEV *MaxBTC = PSE.getSymbolicMaxBackedgeTakenCount();
+  for (auto &[StrideU, Values] : Requests) {
+    const StrideValue &Best =
+        *max_element(Values, [](const StrideValue &A, const StrideValue &B) {
+          return A.NumMembers < B.NumMembers;
+        });
+    const SCEVPredicate *Pred = SE.getEqualPredicate(StrideU, Best.C);
+    if (Complexity + Pred->getComplexity() > MaxComplexity)
+      continue;
+    if (!isa<SCEVCouldNotCompute>(MaxBTC)) {
+      SCEVUnionPredicate Preds({&PSE.getPredicate(), Pred}, SE);
+      const SCEV *BTC = SE.rewriteUsingPredicate(MaxBTC, &OuterLoop, Preds);
+      if (SE.isKnownPredicate(
+              CmpInst::ICMP_ULT, BTC,
+              SE.getConstant(BTC->getType(), VF.getKnownMinValue() - 1)))
+        continue;
+    }
+    PSE.addPredicate(*Pred);
+    Complexity += Pred->getComplexity();
+    Strides.push_back(StrideU);
+  }
+  return Strides;
 }
 
 void VPlanTransforms::createOuterLoopInterleaveGroups(
@@ -3339,12 +3502,12 @@ void VPlanTransforms::createOuterLoopInterleaveGroups(
         if (!MemR || MemR->isConsecutive() || MemR->isMasked())
           return std::nullopt;
         return getGroupCandidate(R, MemR->getIngredient(), MemR->getAddr(), PSE,
-                                 OuterLoop, HeaderVPBBToLoop);
+                                 OuterLoop, HeaderVPBBToLoop,
+                                 /*AllowRuntimeStride=*/false);
       },
       [&](ArrayRef<GroupCandidate> Run) {
-        for (std::unique_ptr<InterleaveGroup<Instruction>> &Group :
-             formFullGroups(Run, *PSE.getSE(), Plan.getDataLayout(),
-                            MaxFactor)) {
+        for (auto &[Group, _] : formFullGroups(
+                 Run, *PSE.getSE(), Plan.getDataLayout(), MaxFactor)) {
           NewGroups.insert(Group.get());
           Groups.push_back(std::move(Group));
         }

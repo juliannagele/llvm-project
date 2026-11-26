@@ -10,6 +10,7 @@
 #include "../lib/Transforms/Vectorize/VPlanTransforms.h"
 #include "../lib/Transforms/Vectorize/VPlanUtils.h"
 #include "VPlanTestBase.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
@@ -349,6 +350,61 @@ compound=true
 )";
   EXPECT_EQ(ExpectedStr, FullDump);
 #endif
+}
+
+TEST_F(VPlanHCFGTest, testNestedLoopHeadersPlainCFG) {
+  const char *ModuleString =
+      "define void @f(ptr %A, ptr %B, i64 %N, i64 %M) {\n"
+      "entry:\n"
+      "  br label %outer.header\n"
+      "outer.header:\n"
+      "  %i = phi i64 [ 0, %entry ], [ %i.next, %outer.latch ]\n"
+      "  br label %inner\n"
+      "inner:\n"
+      "  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]\n"
+      "  %k = phi i64 [ 0, %outer.header ], [ %k.next, %inner ]\n"
+      "  %gep = getelementptr inbounds i64, ptr %A, i64 %j\n"
+      "  %step = load i64, ptr %B\n"
+      "  store i64 %i, ptr %gep\n"
+      "  %j.next = add nuw nsw i64 %j, %M\n"
+      "  %k.next = add i64 %k, %step\n"
+      "  %inner.ec = icmp eq i64 %j.next, %N\n"
+      "  br i1 %inner.ec, label %outer.latch, label %inner\n"
+      "outer.latch:\n"
+      "  %i.next = add nuw nsw i64 %i, 1\n"
+      "  %outer.ec = icmp eq i64 %i.next, %N\n"
+      "  br i1 %outer.ec, label %exit, label %outer.header\n"
+      "exit:\n"
+      "  ret void\n"
+      "}\n";
+
+  Module &M = parseModule(ModuleString);
+  Function *F = M.getFunction("f");
+  BasicBlock *LoopHeader = F->getEntryBlock().getSingleSuccessor();
+  auto Plan = buildVPlan(LoopHeader, std::nullopt, /*CreateLoopRegions=*/false);
+  Loop *OuterLoop = LI->getLoopFor(LoopHeader);
+  Loop *InnerLoop = *OuterLoop->begin();
+  PredicatedScalarEvolution PSE(*SE, *OuterLoop);
+
+  // The block of the inner loop header is mapped to the inner loop.
+  DenseMap<const VPBasicBlock *, const Loop *> HeaderVPBBToLoop =
+      vputils::getNestedLoopHeaders(*Plan, *OuterLoop);
+  ASSERT_EQ(1u, HeaderVPBBToLoop.size());
+  auto [VPBB, L] = *HeaderVPBBToLoop.begin();
+  EXPECT_EQ(InnerLoop, L);
+  EXPECT_EQ("inner", VPBB->getName());
+
+  // The phi of j, with a step defined outside the inner loop, is an AddRec of
+  // the inner loop. The step of k is loaded in the inner loop.
+  auto *J = cast<VPPhi>(&VPBB->front());
+  auto *K = cast<VPPhi>(&*std::next(VPBB->begin()));
+  const SCEV *JSCEV =
+      vputils::getSCEVExprForVPValue(J, PSE, {OuterLoop, &HeaderVPBBToLoop});
+  auto *JAddRec = dyn_cast<SCEVAddRecExpr>(JSCEV);
+  ASSERT_TRUE(JAddRec);
+  EXPECT_EQ(InnerLoop, JAddRec->getLoop());
+  EXPECT_TRUE(isa<SCEVCouldNotCompute>(
+      vputils::getSCEVExprForVPValue(K, PSE, {OuterLoop, &HeaderVPBBToLoop})));
 }
 
 } // namespace

@@ -1182,6 +1182,219 @@ exit:
   ret void
 }
 
+; Runtime strides that do not form groups. The groups formed with runtime
+; strides are checked in outer-loop-interleave-groups-runtime-stride.ll.
+
+; The stores through dst ask for %S == 2 and the stores through dst2 for
+; %T == 2. With %T == 2, the loop, whose trip count is %T, would have fewer
+; iterations than VF, so only %S is versioned.
+define void @two_strides_one_too_few_iterations(ptr noalias %dst, ptr noalias %dst2, i64 %S, i64 %T, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'two_strides_one_too_few_iterations'
+; CHECK:      INTERLEAVE-GROUP with factor 2, ir<%d0>
+; CHECK:        store ir<%t> to index 0
+; CHECK:        store ir<%t> to index 1
+; CHECK:      WIDEN store ir<%e0>, ir<%t>, align 4
+; CHECK:      WIDEN store ir<%e1>, ir<%t>, align 4
+;
+entry:
+  %guard = icmp sgt i64 %T, 0
+  br i1 %guard, label %outer.header, label %exit
+
+outer.header:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %t = trunc i64 %i to i32
+  %iS = mul nsw i64 %i, %S
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %iS
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  store i32 %t, ptr %d0, align 4
+  store i32 %t, ptr %d1, align 4
+  %iT = mul nsw i64 %i, %T
+  %e0 = getelementptr inbounds i32, ptr %dst2, i64 %iT
+  %e1 = getelementptr inbounds i8, ptr %e0, i64 4
+  store i32 %t, ptr %e0, align 4
+  store i32 %t, ptr %e1, align 4
+  %i.next = add nuw nsw i64 %i, 1
+  %outer.ec = icmp eq i64 %i.next, %T
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The stores to dst[i * S] and dst[i * S + 2] are only a group with a gap, of
+; factor 3 if %S == 3, so the loop is not versioned.
+; TODO: Support groups with gaps.
+define void @store_group_runtime_stride_with_gap(ptr noalias %dst, i64 %S, i64 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_runtime_stride_with_gap'
+; CHECK:      WIDEN store ir<%d0>, ir<%t>, align 4
+; CHECK:      WIDEN store ir<%d2>, ir<%t>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %t = trunc i64 %i to i32
+  %iS = mul nsw i64 %i, %S
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %iS
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %t, ptr %d0, align 4
+  store i32 %t, ptr %d2, align 4
+  %i.next = add nuw nsw i64 %i, 1
+  %outer.ec = icmp eq i64 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The stride is 2 * S elements. The three stores would need 2 * S == 3, which
+; no integer %S satisfies.
+define void @store_group_scaled_runtime_stride(ptr noalias %dst, i64 %S, i64 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'store_group_scaled_runtime_stride'
+; CHECK:      WIDEN store ir<%d0>, ir<%t>, align 4
+; CHECK:      WIDEN store ir<%d1>, ir<%t>, align 4
+; CHECK:      WIDEN store ir<%d2>, ir<%t>, align 4
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %t = trunc i64 %i to i32
+  %S2 = shl nsw i64 %S, 1
+  %iS = mul nsw i64 %i, %S2
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %iS
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %t, ptr %d0, align 4
+  store i32 %t, ptr %d1, align 4
+  store i32 %t, ptr %d2, align 4
+  %i.next = add nuw nsw i64 %i, 1
+  %outer.ec = icmp eq i64 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The loads need %S == 2 and the stores %S == 3. The loop is versioned on the
+; value that makes more accesses group members, %S == 3, although the loads come
+; first, so the loads are not a full group. Only the store group is formed.
+;   for (j = 0; j < M; j++) { p = &src[i * S + j * pitch]; a += p[0]; b += p[1]; }
+;   dst[i * S] = a; dst[i * S + 1] = b; dst[i * S + 2] = a + b;
+define void @load_and_store_groups_mismatched_factors(ptr noalias %dst, ptr noalias %src, i64 %S, i64 %pitch, i64 %N, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'load_and_store_groups_mismatched_factors'
+; CHECK:        WIDEN ir<%v0> = load ir<%p0>, align 4
+; CHECK:        WIDEN ir<%v1> = load ir<%p1>, align 4
+; CHECK:      INTERLEAVE-GROUP with factor 3, ir<%d0>
+; CHECK:        store ir<%a.next> to index 0
+; CHECK:        store ir<%b.next> to index 1
+; CHECK:        store ir<%ab> to index 2
+;
+entry:
+  br label %outer.header
+
+outer.header:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %outer.latch ]
+  %iS = mul nsw i64 %i, %S
+  %src.i = getelementptr inbounds i32, ptr %src, i64 %iS
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %a = phi i32 [ 0, %outer.header ], [ %a.next, %inner ]
+  %b = phi i32 [ 0, %outer.header ], [ %b.next, %inner ]
+  %jp = mul nsw i64 %j, %pitch
+  %p0 = getelementptr inbounds i32, ptr %src.i, i64 %jp
+  %p1 = getelementptr inbounds i8, ptr %p0, i64 4
+  %v0 = load i32, ptr %p0, align 4
+  %v1 = load i32, ptr %p1, align 4
+  %a.next = add i32 %a, %v0
+  %b.next = add i32 %b, %v1
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %ab = add i32 %a.next, %b.next
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %iS
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  %d2 = getelementptr inbounds i8, ptr %d0, i64 8
+  store i32 %a.next, ptr %d0, align 4
+  store i32 %b.next, ptr %d1, align 4
+  store i32 %ab, ptr %d2, align 4
+  %i.next = add nuw nsw i64 %i, 1
+  %outer.ec = icmp eq i64 %i.next, %N
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
+; The trip count is the stride. With %S == 2, the loop has 2 iterations, fewer
+; than VF, so the vector loop would never run and the loop is not versioned.
+define void @trip_count_is_runtime_stride_too_small(ptr noalias %dst, i64 %S, i64 %M) {
+; CHECK-LABEL: VPlan for loop in 'trip_count_is_runtime_stride_too_small'
+; CHECK:      WIDEN store ir<%d0>, ir<%t>, align 4
+; CHECK:      WIDEN store ir<%d1>, ir<%t>, align 4
+;
+entry:
+  %guard = icmp sgt i64 %S, 0
+  br i1 %guard, label %outer.header, label %exit
+
+outer.header:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %inner
+
+inner:
+  %j = phi i64 [ 0, %outer.header ], [ %j.next, %inner ]
+  %j.next = add nuw nsw i64 %j, 1
+  %inner.ec = icmp eq i64 %j.next, %M
+  br i1 %inner.ec, label %outer.latch, label %inner
+
+outer.latch:
+  %t = trunc i64 %i to i32
+  %iS = mul nsw i64 %i, %S
+  %d0 = getelementptr inbounds i32, ptr %dst, i64 %iS
+  %d1 = getelementptr inbounds i8, ptr %d0, i64 4
+  store i32 %t, ptr %d0, align 4
+  store i32 %t, ptr %d1, align 4
+  %i.next = add nuw nsw i64 %i, 1
+  %outer.ec = icmp eq i64 %i.next, %S
+  br i1 %outer.ec, label %exit, label %outer.header, !llvm.loop !0
+
+exit:
+  ret void
+}
+
 !0 = distinct !{!0, !1, !2}
 !1 = !{!"llvm.loop.vectorize.width", i32 4}
 !2 = !{!"llvm.loop.vectorize.enable"}

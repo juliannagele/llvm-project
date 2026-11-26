@@ -335,11 +335,11 @@ struct VPlanTransforms {
   static void simplifyLiveInsWithSCEV(VPlan &Plan,
                                       PredicatedScalarEvolution &PSE);
 
-  /// Replace symbolic strides from \p StridesMap in \p Plan with constants when
+  /// Replace the symbolic strides \p Strides in \p Plan with constants when
   /// possible.
   static void replaceSymbolicStrides(VPlan &Plan,
                                      PredicatedScalarEvolution &PSE,
-                                     const SymbolicStrideMap &StridesMap,
+                                     ArrayRef<const SCEVUnknown *> Strides,
                                      const VPDominatorTree &VPDT);
 
   /// Drop poison flags from recipes that may generate a poison value that is
@@ -388,6 +388,18 @@ struct VPlanTransforms {
       VPlan &Plan, PredicatedScalarEvolution &PSE, const Loop &OuterLoop,
       const DenseMap<const VPBasicBlock *, const Loop *> &HeaderVPBBToLoop,
       SmallVectorImpl<std::unique_ptr<InterleaveGroup<Instruction>>> &Groups);
+
+  /// Version the plain-CFG outer-loop plan \p Plan, which vectorizes
+  /// \p OuterLoop with \p VF, on the runtime strides of interleave groups:
+  /// for loads or stores that form a full group of factor Factor if their
+  /// stride in \p OuterLoop is Factor elements, add the predicate that the
+  /// stride has that value to \p PSE, unless the complexity of the SCEV
+  /// predicates would exceed \p MaxComplexity. Returns the versioned strides,
+  /// for replaceSymbolicStrides.
+  static SmallVector<const SCEVUnknown *>
+  speculateOuterLoopGroupStrides(VPlan &Plan, PredicatedScalarEvolution &PSE,
+                                 const Loop &OuterLoop, ElementCount VF,
+                                 unsigned MaxComplexity);
 
   /// Transform widen memory recipes into strided access recipes when legal
   /// and profitable. Clamps \p Range to maintain consistency with widen

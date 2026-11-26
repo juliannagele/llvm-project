@@ -85,8 +85,10 @@ inline const SCEV *getSCEVExprForVPValue(const VPValue *V,
 
 /// Returns a map from the header VPBasicBlocks of the loop regions nested in
 /// the vector loop region of \p Plan to their IR loops in \p OuterLoop, the
-/// loop vectorized by \p Plan. Uses the IR phis underlying the header phis, so
-/// it must be called before they are converted to recipes.
+/// loop vectorized by \p Plan. If \p Plan has no regions yet, maps the headers
+/// of the loops nested in its plain CFG loop instead. Uses the IR phis
+/// underlying the header phis, so it must be called before they are converted
+/// to recipes.
 LLVM_ABI_FOR_TEST DenseMap<const VPBasicBlock *, const Loop *>
 getNestedLoopHeaders(const VPlan &Plan, const Loop &OuterLoop);
 
