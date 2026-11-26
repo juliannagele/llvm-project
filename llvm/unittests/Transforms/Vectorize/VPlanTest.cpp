@@ -73,6 +73,57 @@ loop:
             vputils::getSCEVExprForVPValue(&WrappingAbs, PSE, L));
 }
 
+TEST_F(VPlanSCEVTest, GetSCEVExprForVPValueWidenLoad) {
+  const char *ModuleString = R"(
+define void @f(ptr %p, ptr %q) {
+entry:
+  br label %loop
+loop:
+  %l = load i32, ptr %p
+  %lq = load ptr, ptr %q
+  br label %loop
+}
+)";
+
+  Module &M = parseModule(ModuleString);
+  Function *F = M.getFunction("f");
+  BasicBlock *LoopHeader = F->getEntryBlock().getSingleSuccessor();
+  doAnalysis(*F);
+
+  Loop *L = LI->getLoopFor(LoopHeader);
+  PredicatedScalarEvolution PSE(*SE, *L);
+  VPlan Plan(LoopHeader, IntegerType::get(*Ctx, 32));
+  auto *Load = cast<LoadInst>(&LoopHeader->front());
+  auto *PtrLoad = cast<LoadInst>(Load->getNextNode());
+  VPValue *P = Plan.getOrAddLiveIn(F->getArg(0));
+  VPValue *Q = Plan.getOrAddLiveIn(F->getArg(1));
+
+  // An unmasked gather from a uniform address is the IR load.
+  VPWidenLoadRecipe Gather(*Load, P, /*Mask=*/nullptr, /*Consecutive=*/false,
+                           Load->getAlign(), {}, {});
+  EXPECT_EQ(SE->getUnknown(Load),
+            vputils::getSCEVExprForVPValue(&Gather, PSE, L));
+
+  VPWidenLoadRecipe Consecutive(*Load, P, /*Mask=*/nullptr,
+                                /*Consecutive=*/true, Load->getAlign(), {}, {});
+  EXPECT_TRUE(isa<SCEVCouldNotCompute>(
+      vputils::getSCEVExprForVPValue(&Consecutive, PSE, L)));
+
+  VPWidenLoadRecipe Masked(*Load, P, Plan.getTrue(), /*Consecutive=*/false,
+                           Load->getAlign(), {}, {});
+  EXPECT_TRUE(isa<SCEVCouldNotCompute>(
+      vputils::getSCEVExprForVPValue(&Masked, PSE, L)));
+
+  // The address of NonUniform is a widened load, which is not known to be
+  // uniform.
+  VPWidenLoadRecipe Ptr(*PtrLoad, Q, /*Mask=*/nullptr, /*Consecutive=*/false,
+                        PtrLoad->getAlign(), {}, {});
+  VPWidenLoadRecipe NonUniform(*Load, &Ptr, /*Mask=*/nullptr,
+                               /*Consecutive=*/false, Load->getAlign(), {}, {});
+  EXPECT_TRUE(isa<SCEVCouldNotCompute>(
+      vputils::getSCEVExprForVPValue(&NonUniform, PSE, L)));
+}
+
 TEST_F(VPInstructionTest, insertBefore) {
   IntegerType *Int32 = IntegerType::get(C, 32);
   VPInstruction *I1 =

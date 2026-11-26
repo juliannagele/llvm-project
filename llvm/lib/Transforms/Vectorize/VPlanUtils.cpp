@@ -172,6 +172,33 @@ GEPNoWrapFlags vputils::getGEPFlagsForPtr(VPValue *Ptr) {
   return GEPNoWrapFlags::none();
 }
 
+/// Returns a SCEVUnknown for the IR load of \p R, an opaque value like a
+/// live-in, if \p R is a load that computes the same value in all its copies.
+/// Unrolling and replication create copies of a recipe that share its IR load,
+/// so the value must be the same for all VFs and UFs, not only for all lanes.
+/// Otherwise returns SCEVCouldNotCompute.
+static const SCEV *getSCEVForUniformLoad(const VPRecipeBase *R,
+                                         ScalarEvolution &SE) {
+  LoadInst *LI;
+  bool IsUniform;
+  if (auto *RepR = dyn_cast<VPReplicateRecipe>(R)) {
+    LI = dyn_cast<LoadInst>(RepR->getUnderlyingValue());
+    IsUniform =
+        LI && !RepR->isPredicated() && vputils::isUniformAcrossVFsAndUFs(RepR);
+  } else {
+    // An unmasked gather from a uniform address loads the same value in all
+    // lanes and parts. narrowToSingleScalarRecipes may later narrow it to a
+    // single scalar.
+    auto *LoadR = cast<VPWidenLoadRecipe>(R);
+    LI = cast<LoadInst>(&LoadR->getIngredient());
+    IsUniform = !LoadR->isConsecutive() && !LoadR->isMasked() &&
+                vputils::isUniformAcrossVFsAndUFs(LoadR->getAddr());
+  }
+  if (!IsUniform || !SE.isSCEVable(LI->getType()))
+    return SE.getCouldNotCompute();
+  return SE.getUnknown(LI);
+}
+
 const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
                                            PredicatedScalarEvolution &PSE,
                                            const Loop *L) {
@@ -392,6 +419,8 @@ const SCEV *vputils::getSCEVExprForVPValue(const VPValue *V,
             Index = SE.getTruncateOrZeroExtend(Index, Step->getType());
             return SE.getAddExpr(Start, SE.getMulExpr(Index, Step));
           })
+          .Case<VPReplicateRecipe, VPWidenLoadRecipe>(
+              [&SE](const auto *R) { return getSCEVForUniformLoad(R, SE); })
           .Case([&SE, &PSE, L](const VPScalarIVStepsRecipe *R) {
             // A start index, set for parts and lanes other than the first,
             // adds StartIndex * Step, which is not modeled.
